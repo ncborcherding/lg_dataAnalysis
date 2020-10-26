@@ -1,0 +1,4090 @@
+---
+title: Analysis of single-cell sequencing data in murine myocarditis
+author: 
+- name: Nick Borcherding
+  email: ncborch@gmail.com
+  affiliation: Washington University in St. Louis, School of Medicine, St. Louis, MO, USA
+date: "June 5, 2020"
+output:
+  BiocStyle::html_document:
+    toc_float: true
+
+---
+
+```{r, echo=FALSE, results="hide", message=FALSE}
+knitr::opts_chunk$set(error=FALSE, message=FALSE, warning=FALSE)
+library(BiocStyle)
+```
+
+# Introduction
+
+## Structure of Project
+
+Analysis is broken into 2 major folders/sub directories. The *data* folder will includes the output of Cellranger for each run (in the folders **Run1** and **Run2**), as well as markers for cell types provided in the dropbox folder (**marker.genes**). The *data* folder is also the place to store processed outputs, like the integrated UMAP object and enrichment results.
+
+In contrast, the *DataAnalysis* is for outputs that could be the basis of figure or table generation. For example, the **UMAP** subfolder includes the basic UMAP projections for cluster, type, and run, but also the expression of **LineageMarkers** and **TopeClusterMarkers** using the schex proportion of samples approach.
+
+##Computer Info:
+Analysis is being run on a 13-inch Macbook Pro (2017) with 3.5 GHz Dual-Core i7 and 16 GB of 2133 MHz LPDDR3. There is a limit to the speed and RAM, so for the purposes of the markdown file, I will not run some of the code blocks during the kniting (look at eval = F). You will also see the call *rm()* frequently to just remove non-vital objects from the global environment.
+
+***
+
+# Loading Libraries
+
+In general I like to load libraries here that we will use universally, and then call other libraries when we need them in the code chunks that are relevant. 
+
+```{r}
+suppressPackageStartupMessages(library(Seurat))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(dplyr))
+```
+
+I also like to set a color palette before I begin - this way all the colors are consistent throughout the publication figures.
+
+```{r setup, include=FALSE}
+colorblind_vector <- colorRampPalette(c("#FF4B20", "#FFB433", "#C6FDEC", "#7AC5FF", "#0348A6"))
+```
+
+
+***
+
+# Loading and Processing the Data
+
+## Load Data
+```{r eval=FALSE}
+base_dir <- "~/Documents/GitHub/Lasrado_Myocarditis/data/"
+
+H1 <- Read10X(data.dir = paste0(base_dir, "Run1/Healthy"))
+colnames(x = H1) <- paste('H1', colnames(x = H1), sep = '_')
+H1 <- CreateSeuratObject(H1)
+
+H2 <- Read10X(data.dir = paste0(base_dir, "/Run2/Healthy"))
+colnames(x = H2) <- paste('H2', colnames(x = H2), sep = '_')
+H2 <- CreateSeuratObject(H2)
+
+S1 <- Read10X(data.dir = paste0(base_dir, "/Run1/Sick"))
+colnames(x = S1) <- paste('S1', colnames(x = S1), sep = '_')
+S1 <- CreateSeuratObject(S1)
+
+S2 <- Read10X(data.dir = paste0(base_dir, "/Run2/Sick"))
+colnames(x = S2) <- paste('S2', colnames(x = S2), sep = '_')
+S2 <- CreateSeuratObject(S2)
+```
+
+## Processing
+
+Transforming into SCT - Based on the description of differing chemistry versions and data quality, we are going to go with using SCT workflow. A newer approach to the integration, more info can be found [here](https://genomebiology.biomedcentral.com/articles/10.1186/s13059-019-1874-1). The basis of this method is best described in the abstract:
+
+**"Pearson residuals from ’regularized negative binomial regression’, where cellular sequencing depth is utilized as a covariate in a generalized linear model, successfully remove the influence of technical characteristics from downstream analyses while preserving biological heterogeneity."**
+
+Essentially it is trying to limit biological heterogeneity and technical effects during the integration of the data. After integrating though - we will use the *RNA* assay, as the principal source of expression values. 
+
+```{r eval=FALSE}
+options(future.globals.maxSize= 2621440000) #Need this to transfer transformation so increasing from 500 Mb to 2.5 Gb - math: 2500*1024^2 bytes
+
+list <- list(H1, H2, S1, S2)
+
+for (i in 1:length(list)) {
+    list[[i]] <-  suppressMessages(SCTransform(list[[i]], verbose = FALSE))
+}
+
+select.features <- SelectIntegrationFeatures(object.list = list, nfeatures = 3000)
+list <- PrepSCTIntegration(object.list = list, anchor.features = select.features, 
+    verbose = FALSE)
+
+rm(list = c("H1","H2","S1","S2")) #Saving Memory
+
+anchors <- FindIntegrationAnchors(object.list = list, normalization.method = "SCT", 
+    anchor.features = select.features, verbose = FALSE)
+integrated <- IntegrateData(anchorset = anchors, normalization.method = "SCT", 
+    verbose = FALSE)
+rm(list)
+rm(anchors)
+```
+
+The UMAP visualizations can be difficult to interpret, before I select my parameters, I like to run a long loops to test the various principal components and dimensions to select. This is not particularly elegant, but is better than assuming set dimensions of the vignettes. I am not going to include the folder below in the github repo - its about 800 graphs and not helpful beyond the initial steps. The *DataExplore* folder is where I will place the evaluation figures, but for the purposes of this analysis, I am not going to include the folder in the Git hub repo, because it is largely a waste of space.
+
+```{r eval=FALSE}
+dir.create("DataExplore/")
+dir.create("DataExplore/UMAP")
+for (i in c(10,15,20,25,30,35,40)) {
+    
+    integrated2 <- ScaleData(object = integrated, verbose = FALSE)
+    integrated2 <- RunPCA(object = integrated2, npcs = 40, verbose = FALSE)
+    integrated2 <- RunUMAP(object = integrated2, reduction = "pca", 
+        dims = 1:i) #dimensions for  UMAP
+    for (x in c(10,15,20,25,30,35,40)) { #Dimensions for neighbors
+       integrated2 <- FindNeighbors(object = integrated2, dims = 1:x)
+       for(y in c(0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1)) { #Resolution
+           integrated2 <- FindClusters(object = integrated2, resolution = y, force.recalc=T)
+           plot1 <- DimPlot(integrated2, reduction = "umap", pt.size = 0.5, group.by = "orig.ident")
+           ggsave(path = "DataExplore/UMAP", file = paste("Myo_clusters_UMAP", i, "_Neighbors", x, "_resolution", y, "_OrigIdent.eps", sep=""), plot1, width=4.25, height=3)
+           plot2 <- DimPlot(object = integrated2, reduction = 'umap', label = T) + NoLegend()
+            ggsave(path = "DataExplore/UMAP", file = paste("Myo_clusters_UMAP", i, "_Neighbors", x, "_resolution", y, "_clusters.eps", sep=""), plot2, width=3.5, height=3)
+       }
+    }
+}
+rm(integrated2)
+```
+
+## Selecting Parameters
+
+Going over output from above - it looks like *UMAP30_Neighbors40_resolutio0.6* has good dispersion between cell populations and clusters. 
+
+For me, when evaluating the UMAPs - I am looking for clean separations between cell types (we are assuming a lot of different cell types for the purposes of the experimental set up), but also between clusters. The last thing I check during the evaluations is the overlap of different experimental runs - which this version is very good across all clusters, with the exceptions of Cluster 12 and S1 (a little off), but acceptable.
+
+```{r eval=FALSE}
+integrated <- ScaleData(object = integrated, verbose = FALSE)
+integrated <- RunPCA(object = integrated, npcs = 40, verbose = FALSE)
+integrated <- RunUMAP(object = integrated, reduction = "pca", 
+    dims = 1:30)
+integrated <- FindNeighbors(object = integrated, dims = 1:40, force.recalc = T)
+integrated <- FindClusters(object = integrated, resolution = 0.6, force.recalc=T)
+
+
+dir.create("DataAnalysis/")
+dir.create("DataAnalysis/UMAP")
+update_geom_defaults("point", list(stroke=0.1))
+DimPlot(object = integrated, reduction = 'umap', label = T, ) + NoLegend()
+ggsave(path = "DataAnalysis/UMAP", filename="Myo_Cluster_UMAP_resolution6.eps", width=3.5, height=3)
+DimPlot(object = integrated, reduction = 'umap', group.by = "orig.ident") 
+ggsave(path = "DataAnalysis/UMAP", filename="Myo_OrginalID_UMAP_res6.pdf", width=3.75, height=3)
+```
+
+```{r}
+integrated@active.ident <- factor(integrated@active.ident, levels = 0:25)
+
+# Create vector of default ggplot2 colors
+my_color_palette <- hue_pal()(length(identities))
+
+# Plot the tSNE plot with the default ggplot2 colors
+TSNEPlot(object = object, do.return = T) + 
+  scale_color_manual(values = my_color_palette)
+```
+
+Note able to share the integrated file via github due to the size of 1.94 Gb, link [here](https://drive.google.com/file/d/1DOwC3DvUKRNXDXI3nZ7zjuCroWTbXKv1/view?usp=sharing) via Google drive.
+
+Next I just want to reduce the orig.ident variable into a 2-level "Type" variable, so we can look at the difference in distribution of control and myocarditis samples along the UMAP.
+
+```{r eval=FALSE}
+library(dplyr)
+df <- integrated[[]]
+names <- rownames(df)
+df <- df %>% 
+    mutate(Type = ifelse(orig.ident == "H1" | orig.ident == "H2", "Con", "MyoC"))
+df <- as.data.frame(df[,"Type"])
+colnames(df) <- "Type"
+rownames(df) <- names
+
+integrated <- AddMetaData(integrated, df)
+
+DimPlot(object = integrated, reduction = 'umap', group.by = "Type", split.by = "Type") + scale_color_manual(values = rev(colorblind_vector(2))) 
+ggsave(path = "DataAnalysis/UMAP", filename="Myo_Type_UMAP_res6.eps", width=7.25, height=3)
+```
+
+***
+# Identifying subtypes
+
+## Differential Gene Expression
+
+The first step for me is to always look at major markers across clusters, so I will make a folder for differential gene expression (DGE), normalize the *RNA* data, and then use the **FindAllMarkers()** function. This is a generalized function for finding positively expressed genes by cluster (large amount of default filtering will remain intact for now). *Importanly*, RNA data needs to be used over the integrated or sct data as this the former is a reflection of true expression and the latter are values to help with the 2D representation in the UMAP.
+
+```{r eval=FALSE}
+dir.create("DataAnalysis/DGE")
+integrated <- NormalizeData(integrated, assay = "RNA")
+All.markers <- FindAllMarkers(integrated, assay = "RNA", pseudocount.use = 0.1, only.pos = T) 
+write.table(All.markers, file = "./DataAnalysis/DGE/FindAllMarkers_output.txt", col.names=NA, sep="\t",append=F)
+```
+
+
+```{r}
+integrated2 <- integrated
+integrated2 <- SetIdent(integrated2, value = integrated2@meta.data$Major)
+All.markers.celltype <- FindAllMarkers(integrated2, assay = "RNA", pseudocount.use = 0.1, only.pos = T) 
+write.table(All.markers.celltype, file = "./DataAnalysis/DGE/FindAllMarkers_byCelltype_output.txt", col.names=NA, sep="\t",append=F)
+
+cond <- as.character(unique(integrated2$Type)) 
+for (i in seq_along(cond)){
+    tmp <- subset(integrated2, Type == cond[i])
+    tmp <- NormalizeData(tmp)
+    All.markers.tmp <- FindAllMarkers(tmp, assay = "RNA", pseudocount.use = 0.1, only.pos = T)
+    write.table(All.markers.celltype, file = paste0("./DataAnalysis/DGE/FindAllMarkers_byCelltype_", cond[i], ".txt"), col.names=NA, sep="\t",append=F)
+}
+```
+
+### Hex graphs
+
+I have recently moved away from graphing expression on UMAP projections - there are some issues with the layers of dot's drawn. But I also think it doesn't account for one of the major weaknesses of single-cell RNA-seq - drop out effect. So I have actually started using the r package *schex*.
+
+```{r}
+integrated <- readRDS("data/Seurat_integrated.rds") #Loading data here
+
+suppressPackageStartupMessages(library(schex))
+integrated <- make_hexbin(integrated, 80, dimension_reduction = "UMAP")
+```
+
+What this package does is calculates the mean, median, or proportion of mRNA expression of an average number of cells in the vicinity. To look at expression distribution, the proportion approach is ideal. We can use that, by calling *action = "prop_0"* in the **plot_hexbin_feature()** call below.
+
+### Top 5 markers per cluster
+
+```{r}
+All.markers <- read.delim("./DataAnalysis/DGE/FindAllMarkers_output.txt")
+top5 <- All.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_logFC)
+top5 <- top5$gene #just want the IDs
+
+dir.create("DataAnalysis/UMAP/TopClusterMarkers")
+for (i in seq_along(top5)) {
+    plot <- plot_hexbin_feature(integrated, feature = top5[i], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/UMAP/TopClusterMarkers", file = paste0("Top5markers", "_", top5[i], "_prop.pdf"), plot, height=3, width=3.25)
+}
+```
+
+### Lineage Markers Provided in the Dropbox account
+
+#### Loading and organizing the markers
+
+```{r}
+dir.create("DataAnalysis/UMAP/LineageMarkers")
+
+file_list <- list.files("./data/markers.genes")
+file_list <- file_list[grepl(".txt", file_list)]
+files <- file.path(paste0("./data/markers.genes/", file_list))
+
+marker_list <- list()
+for (i in 1:length(files)) {
+    marker_list[[i]] <- read.delim(files[i], col.names = FALSE)
+}
+names <- stringr::str_remove(file_list, ".txt")
+names(marker_list) <- names
+```
+
+#### Graphing all the genes
+```{r}
+DefaultAssay(integrated) <- "RNA"
+
+for (i in seq_along(marker_list)) {
+    tmp <- as.character(unlist(marker_list[i]))
+    for (j in seq_along(tmp)) {
+        if (length(which(rownames(integrated@assays$RNA@counts) == tmp[j])) == 0){
+            next() #Need to loop here because plot_hexbin_feature() does not have a built-in function to deal with absence of selected gene
+        } else {
+        plot <- plot_hexbin_feature(integrated, feature = tmp[j], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/UMAP/LineageMarkers", file = paste0(names(marker_list)[i], "_", tmp[j], "_prop.pdf"), plot, height=3, width=3.25)
+        }
+    }
+}
+```
+             
+## Singler
+
+Singler is a very cool package: it uses large cohorts of isolated bulk sequencing to correlate with single-cell data and makes ID-ing the cell type really intuitive. It allegedly works with Seurat, but I am not the largest fan of its work, so I have made some customization to help.
+
+As opposed to calculating the signatures across every single cell, the first step is to calculate mean expression by cluster using the **AverageExpression()** function in Seurat. Then we will make an expression matrix and load that into the **CreateSinglerObject()** function.
+
+```{r}
+library(SingleR)
+Average <- AverageExpression(integrated, assay = "RNA", return.seurat = T)
+expr_matrix <- as.matrix(Average@assays$RNA@counts[,names(Average@active.ident)])
+gene_annotation <- data.frame(row.names=rownames(expr_matrix), gene_short_name=rownames(expr_matrix))
+```
+
+*Warning:* This is not the greatest call function, sometimes when I delete the defaults the function stops working, so some of these seem random, but they're there for sanity
+
+```{r include=FALSE}
+singler = CreateSinglerObject(expr_matrix, project.name = "Myo", annot = NULL, min.genes = 200,
+  technology = "10X", species = "Mouse", ref.list = list(), normalize.gene.length = F, variable.genes = "de",
+  fine.tune = T, do.signatures = F, do.main.types = T, 
+  reduce.file.size = T, numCores =4)
+  
+singler$seurat = Average 
+```
+
+singleR also doesn't have the best graphical outputs - so I customized it below.
+
+```{r}
+library(pheatmap)
+library(Rfast)
+SingleR.DrawHeatmap2 = function(SingleR,cells.use = NULL, types.use = NULL,
+                               clusters=NULL,top.n=40,normalize=F,
+                               order.by.clusters=F,cells_order=NULL,silent=F,
+                               fontsize_row=9,...) {
+    scores = SingleR$scores
+  if (!is.null(cells.use)) {
+    scores = scores[cells.use,]
+  }
+  if (!is.null(types.use)) {
+    scores = scores[,types.use]
+  }
+  
+  m = apply(t(scale(t(scores))),2,max)
+  
+  thres = sort(m,decreasing=TRUE)[min(top.n,length(m))]
+  
+  data = as.matrix(scores)
+  
+  if (normalize==T) {
+      #for (i in 1:nrow(data)) {
+         # max <- max(data[i,])
+         # min <- min(data[i,])
+         # data[,i] <- (data[,i]-min)/(max-min)
+     # }
+    mmax = rowMaxs(data, value = T)
+    mmin = rowMins(data, value = T)
+    data = (data-mmin)/(mmax-mmin)
+    data = data^3
+     
+  }
+  data = data[,m>(thres-1e-6)]
+  
+  
+  data = t(data)
+  
+  if (!is.null(clusters)) {
+    clusters = as.data.frame(clusters)
+    colnames(clusters) = 'Clusters'
+    rownames(clusters) = colnames(data)
+    
+  }
+  additional_params = list(...)
+  if (is.null(additional_params$annotation_colors)) {
+    annotation_colors = NA
+  } else {
+    annotation_colors = additional_params$annotation_colors
+  }
+  clustering_method = 'ward.D2'
+  if (order.by.clusters==T) {
+    data = data[,order(clusters$Clusters)]
+    clusters = clusters[order(clusters$Clusters),,drop=F]
+    pheatmap(data,border_color=NA,show_colnames=T,
+             clustering_method=clustering_method,fontsize_row=fontsize_row,
+             annotation_col = clusters,cluster_cols = F,silent=silent, 
+             annotation_colors=annotation_colors, color = rev(colorblind_vector(50)))
+  } else if (!is.null(cells_order)) {
+    data = data[,cells_order]
+    clusters = clusters[cells_order,,drop=F]
+    pheatmap(data,border_color=NA,show_colnames=T,
+             clustering_method=clustering_method,fontsize_row=fontsize_row,
+             annotation_col = clusters,cluster_cols = F,silent=silent, 
+             annotation_colors=annotation_colors, color = rev(colorblind_vector(50)))
+  } else {
+    if (!is.null(clusters)) {
+      pheatmap(data,border_color=NA,show_colnames=T,
+               clustering_method=clustering_method,fontsize_row=fontsize_row,
+               annotation_col = clusters,silent=silent, 
+               annotation_colors=annotation_colors, color = rev(colorblind_vector(50)))
+    } else {
+      pheatmap(data[,sample(ncol(data))],border_color=NA,show_colnames=T,
+               clustering_method=clustering_method,fontsize_row=fontsize_row,
+               silent=silent, annotation_colors=annotation_colors, color = rev(colorblind_vector(50)))
+      
+    }
+  }
+}
+```
+
+
+
+Now we can graph the results by cluster using the newer **SingleR.DrawHeatmap2()** function. There are two data sets in singleR for mice - the first, refereed to using [[1]] is derived from the Immune Genome Project (Immgen), while the second [[2]] is a mouse RNA-sequencing project. There are also two major outputs by cohort *SingleR.single.main* refers to results reduced across cell types, while *SingleR.single* offers finer granularity for cell subtypes.
+
+```{r}
+dir.create("DataAnalysis/SingleR")
+
+pdf("./DataAnalysis/SingleR/CellTypes_complex2.pdf")
+SingleR.DrawHeatmap2(singler$singler[[2]]$SingleR.single, top.n = 50, clusters = singler$singler[[2]]$SingleR.single$cell.names, order.by.clusters = F, 
+color = rev(colorblind_vector(50)), normalize = T)
+dev.off()
+
+pdf("./DataAnalysis/SingleR/CellTypes_complex1.pdf")
+SingleR.DrawHeatmap2(singler$singler[[1]]$SingleR.single, top.n = 50, clusters = singler$singler[[1]]$SingleR.single$cell.names, order.by.clusters = F, normalize = T)
+dev.off()
+
+pdf("./DataAnalysis/SingleR/CellTypes_simple1.pdf")
+SingleR.DrawHeatmap2(singler$singler[[1]]$SingleR.single.main, top.n = 15, clusters = singler$singler[[1]]$SingleR.single$cell.names, order.by.clusters = F, normalize = T)
+dev.off()
+
+pdf("./DataAnalysis/SingleR/CellTypes_simple2.pdf")
+SingleR.DrawHeatmap2(singler$singler[[2]]$SingleR.single.main, top.n = 15, clusters = singler$singler[[2]]$SingleR.single$cell.names, order.by.clusters = F, normalize = T) 
+dev.off()
+```
+
+### Assigning Major Cell Types
+
+We can then use the output of singleR and add it to the meta data of the integrated object. I would not call these assignments definitive, but helpful during refining the assignments. The combination of both the **singleR** and marker approach is necessary for cell type assignment. 
+
+```{r, eval=FALSE}
+#Already added to meta data
+meta <- integrated[[]]
+meta$names <- rownames(meta)
+cellTypes <- data.frame("immgen_CellType" = singler$singler[[1]]$SingleR.single.main$labels, "mouseRS_CellType" = singler$singler[[2]]$SingleR.single.main$labels)
+meta <- merge(meta, cellTypes, by.x = "seurat_clusters", by.y = "row.names")
+rownames(meta) <- meta$names
+meta <- meta[,c("immgen_CellType", "mouseRS_CellType")]
+
+integrated <- AddMetaData(integrated, meta)
+```
+
+```{r}
+DimPlot(integrated,reduction = 'umap', group.by = "immgen_CellType")
+ggsave(path = "DataAnalysis/UMAP", filename="Singler_UMAP_immgen.eps", width=4.75, height=3)
+DimPlot(integrated, reduction = 'umap',group.by = "mouseRS_CellType")
+ggsave(path = "DataAnalysis/UMAP", filename="Singler_UMAP_MRS.eps", width=4.75, height=3)
+```
+
+## Final Cell Assignments
+
+With several rounds of input, we have decided to perform manual annotation on two distinct clusters - a DC-like cluster in the B cell cluster 7 and SMC cells in cluster 19. In order to do this, we will be using an interactive in suerat to get the cell names, but it *needs to run in the console* and not the markdown file.
+
+```{r}
+plot <- DimPlot(integrated, reduction = "umap")
+SMC.cells <- CellSelector(plot = plot) #n=30
+DC.cells <- CellSelector(plot = plot) #n=58
+
+Idents(integrated, cells = DC.cells) <- 24
+Idents(integrated, cells = SMC.cells) <- 25
+```
+
+We have created 2 new clusters, 24 and 25, we can now write over the previous umap that looked at cluster assignment
+
+```{r}
+DimPlot(object = integrated, reduction = 'umap', label = T) + NoLegend()
+ggsave(path = "DataAnalysis/UMAP", filename="Myo_Cluster_UMAP_resolution6.eps", width=3.5, height=3)
+```
+
+
+Going through the assignments from singleR, major lineage markers, and the literature for my difficult clusters, and manual assignments just above, we have the following desginations. 
+
+```{r}
+assignments <- read.delim("./data/cell_assign.txt")
+assignments
+```
+
+Like above, I am going to do the same code to add these to the meta data
+```{r}
+integrated@meta.data$final.clusters <- integrated@active.ident
+meta <- integrated[[]]
+meta$names <- rownames(meta)
+meta <- merge(meta, assignments, by.x = "final.clusters", by.y = "Cluster")
+rownames(meta) <- meta$names
+meta <- meta[,c("Cell_Assign", "Major")]
+
+integrated <- AddMetaData(integrated, meta)
+```
+
+```{r}
+DimPlot(integrated,reduction = 'umap', group.by = "Cell_Assign")
+ggsave(path = "DataAnalysis/UMAP", filename="Singler_UMAP_final_cluster.eps", width=8, height=3)
+  DimPlot(integrated, reduction = 'umap',group.by = "Major")
+ggsave(path = "DataAnalysis/UMAP", filename="Singler_UMAP_final_major.eps", width=6.0, height=3)
+```
+
+We also want to just take a look at distributions of cells as a function of multiple categories, we can use alluvial-type graphs. These are probably a little overkill in terms of display, but they make really cool plots and I like them, so there.
+```{r}
+library(ggalluvial)
+library(ggfittext)
+meta <- data.frame(integrated[[]], integrated@active.ident)
+colnames(meta)[ncol(meta)] <- "cluster"
+
+meta <- meta[,c("cluster", "Major","orig.ident", "Type")]
+
+lodes <- to_lodes_form(meta, key = "x", value = "stratum", id = "alluvium",
+                               axes = 1:4, diffuse = c(as.name("cluster"), as.name("orig.ident"), as.name("Type"), as.name("Major")))
+
+ggplot(data = lodes, aes(x = x, stratum = stratum, alluvium = alluvium, label = stratum)) +
+        geom_stratum() +
+        geom_fit_text(stat = "stratum",  infer.label = FALSE, reverse = TRUE) +
+        theme_classic() +
+        geom_fit_text(stat = "stratum",  infer.label = FALSE, reverse = TRUE) +
+        theme(axis.title.x = element_blank(),
+              axis.ticks.x = element_blank()) + 
+        geom_flow(aes(fill = cluster), stat = "alluvium",
+                      lode.guidance = "forward") +
+    guides(fill = F)
+ggsave("DataAnalysis/Alluvial_categories.pdf", height=4, width=6)
+```
+
+Now we can save the integrated object to save the assignments and other meta data
+```{r}
+saveRDS(integrated, file="data/Seurat_integrated.rds")
+integrated <- readRDS("data/Seurat_integrated.rds")
+```
+
+
+## Differences in cell types by Type
+
+There are 2 ways we can look at the contribution of cell types by Type/Condition. We can look at them relativistically, using a proportion chart (position = fill in geom_bar) or in total. 
+
+```{r}
+meta <- integrated[[]]
+freq_table <- meta[,c("Type", "Major")]
+freq_table <- freq_table %>%
+    group_by(Type, Major) %>%
+    summarise(n = n())
+
+ggplot(freq_table, aes(x=Major, y=n, fill=Type)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    coord_flip()
+ggsave(path = "DataAnalysis", file = "relativeContribution_byMajorType.pdf", height=5, width=5)
+
+ggplot(freq_table, aes(x=Major, y=n, fill=Type)) + 
+  geom_bar(stat="identity", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    coord_flip()
+ggsave(path = "DataAnalysis", file = "totalContribution_byMajorType.pdf", height=5, width=5)
+```
+
+However, this can lead to bias as the proportion and total will be influenced by the total number of cells in the condition. To get around this, we can first scale by cell number for **Type** and then perform the same visualizations.
+
+```{r}
+freq_table <- table(integrated$Major, integrated$Type)
+
+#Getting scaled values
+for (i in 1:2) { 
+    freq_table[,i] <- freq_table[,i]/sum(freq_table[,i])
+}
+
+freq_table <- reshape2::melt(freq_table)
+
+ggplot(freq_table, aes(x=Var1, y=value, fill=Var2)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    coord_flip()
+ggsave(path = "DataAnalysis", file = "relativeContribution_byMajorType_scaled.pdf", height=5, width=5)
+
+
+ggplot(freq_table, aes(x=Var1, y=value, fill=Var2)) + 
+  geom_bar(stat="identity", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    coord_flip()
+ggsave(path = "DataAnalysis", file = "totalContribution_byMajorType_scaled.pdf", height=5, width=5)
+
+```
+
+
+We can test the signficance of the cell type assignment differences between **Type** by using  *prop.test()*. For the test, we need the sum of all the cells by **Type** , then we can loop through each cell type and perofm the *prop.test()*. For the test we are going to set the p (proportion) to NULL, becuase each cell type will have a different overall proportion (if we were looking at a binary vector, like gender, p = 0.5). The other assumption we are going to make is alternative hypothesis, becuase we are not assuming that the specific cells have proportions, we are also not going to assume that **Type** increases or decreases certain cell types, the **alternative** parameter is set to default of "two.sided".
+
+```{r}
+table <- table(integrated$Major, integrated$Type)
+
+Con <- sum(table[,1]) #Sum of Healthy Cells
+MyoC <- sum(table[,2]) #Sum of Sick Cells
+
+out <- NULL
+mat <- NULL
+for (i in 1:12) {
+x <- c(Con, MyoC, table[i,1], table[i,2])
+dim(x) <- c(2,2)
+
+test <- prop.test(x[,2], n=x[,1], p = NULL, correct = FALSE)
+
+out <- c(test$p.value, test$estimate[1], test$estimate[2], test$conf.int[1], test$conf.int[2])
+mat <- rbind(mat, out)
+}
+mat <- as.data.frame(mat)
+
+
+colnames(mat) <- c("Pvalue", "Prop_Con", "Prop_MyoC", "OR_low", "OR_high")
+mat$FDR <- p.adjust(mat$Pvalue) #Need to correct for multiple comparisons
+mat$cellType <- rownames(table)
+write.table(mat, file = "./DataAnalysis/ProportionTest_celltypes.txt", col.names=NA, sep="\t",append=F)
+```
+
+***
+
+# Differential gene expression by condition across cell types
+
+Now that we have the cells assigned we can also loop through the assignments to see what are the expression differences by cell types. We are going to subset the seurat object by cell type, renormalize mRNA, change the ident to **Type** and then use *FindMarkers()*. For the function thought, we are going to remove the filtering paramters set as deafults. Before we record, we will use dplyr to calcualte the difference in percentage of cells expressing the mRNA species.
+
+Becuase we are removing the filters in the *FindMarkers* function, this is going to take awhile. 
+
+```{r eval=FALSE}
+Types <- as.character(unique(integrated[[]]$Major))
+
+mat <- NULL
+for (i in seq_along(Types)) {
+    tmp <- subset(integrated, Major == Types[i])
+    tmp <- NormalizeData(tmp, assay = "RNA") #after subset always normalize RNA
+    tmp <- SetIdent(tmp, value = tmp@meta.data$Type)
+    markers <- FindMarkers(object = tmp, 
+                only.pos = F, ident.1 = "MyoC", ident.2="Con", min.diff.pct = -Inf, 
+                logfc.threshold = -Inf, min.pct = -Inf)
+    markers$names <- rownames(markers)
+    markers  <- markers  %>%
+        mutate(Difference = pct.1 - pct.2)
+    
+    mat <- data.frame(markers)
+    write.table(mat, file=paste("./DataAnalysis/DGE/cellType_differentialMarkers_MyoCvCon_", Types[i], ".txt", sep=""),
+                sep="\t",append=F, row.names = FALSE)
+    mat=NULL
+}
+```
+
+
+```{r}
+#########
+#All T cells
+######
+
+tmp <- subset(integrated, Major == "CD8+ T cells" | Major == "CD4+ T cells")
+    tmp <- NormalizeData(tmp, assay = "RNA") #after subset always normalize RNA
+    tmp <- SetIdent(tmp, value = tmp@meta.data$Type)
+    markers <- FindMarkers(object = tmp, 
+                only.pos = F, ident.1 = "MyoC", ident.2="Con", min.diff.pct = -Inf, 
+                logfc.threshold = -Inf, min.pct = -Inf)
+    markers$names <- rownames(markers)
+    markers  <- markers  %>%
+        mutate(Difference = pct.1 - pct.2)
+    
+    mat <- data.frame(markers)
+    write.table(mat, file=paste("./DataAnalysis/DGE/cellType_differentialMarkers_MyoCvCon_", "TCells", ".txt", sep=""),
+                sep="\t",append=F, row.names = FALSE)
+```
+
+## Visulizing the differential genes
+
+Quick load all the results into a list, similar to the code above for lineage markers with some modification
+```{r}
+
+file_list <- list.files("./DataAnalysis/DGE/")
+file_list <- file_list[grepl("cellType", file_list)]
+files <- file.path(paste0("./DataAnalysis/DGE/", file_list))
+
+marker_list <- list()
+for (i in 1:length(files)) {
+    marker_list[[i]] <- read.delim(files[i])
+}
+names <- stringr::str_split(file_list, "_", simplify = T)[,4] #Isolate just the cell type
+names <- stringr::str_remove(names, ".txt") #remove .txt
+names <- stringr::str_remove(names, " ") #remoce spaces
+names(marker_list) <- names #assign the cell type to each element of the list
+```
+
+Going to make 2 different plots, the first will take the percent difference from Myocarditis versus healthy cells and place that delta on the x-axis with fold-change on the y-axis. The other graph will be the typical volcano plot. Gene labeling is based first on siginificance and then on the weight of fold-change + 4xDelta Percent. The latter is such that we want to find genes that are not only upregulated by good markers for myocarditis. 
+
+```{r}
+library(ggrepel)
+dir.create("DataAnalysis/DGE/visualizations")
+
+for (i in seq_along(marker_list)) {
+tmp <- marker_list[[i]]
+tmp <- tmp %>%
+    mutate(Trend = ifelse(p_val_adj <= 0.05 & avg_logFC > 0, "Up",
+                    ifelse(p_val_adj <= 0.05 & avg_logFC < 0, "Down", "None")))
+filter <- subset(tmp, p_val_adj <= 0.05 & avg_logFC > 0)
+top10 <- filter %>% top_n(n =10, wt = avg_logFC + 4*Difference)
+
+ggplot(tmp, aes(x=Difference, y=avg_logFC)) + 
+  geom_point(size=0.5, color="#999999") + 
+    geom_point(data=subset(tmp, Trend == "Up" | Trend == "Down"), aes(color = Trend), size=0.75) + 
+  theme_classic() + 
+    geom_hline(yintercept = 0, lty = 2) + 
+    geom_vline(xintercept = 0, lty = 2)  + 
+    geom_text_repel(data=subset(tmp, names %in% top10$names), aes(label=names), segment.size = 0.25, size=2.5) + 
+    scale_color_manual(values = rev(colorblind_vector(2)))+
+    guides(color=F)
+ggsave(path = "./DataAnalysis/DGE/visualizations", file = paste0("pctDifference_vs_foldchange_", names(marker_list[i]), ".pdf"), height = 2.5, width=2.5) 
+
+tmp <- tmp %>%
+    mutate(p_val_adj = ifelse(p_val_adj == 0, min(p_val_adj), p_val_adj)) #mutate the p-values that are lower than detection
+
+ggplot(tmp, aes(x=avg_logFC, y=-log10(p_val_adj))) + 
+    geom_point(size=0.5, color="#999999") + 
+    geom_point(data=subset(tmp, Trend == "Up" | Trend == "Down"), aes(color = Trend), size=0.75) + 
+    theme_classic() + 
+    scale_y_sqrt() +
+    geom_vline(xintercept = 0, lty = 2) + 
+    geom_hline(yintercept = 1.3, lty = 2) + 
+    geom_text_repel(data=subset(tmp, names %in% top10$names), aes(label=names), segment.size = 0.25, size=2.5) + 
+    scale_color_manual(values = rev(colorblind_vector(2))) + 
+    guides(color = F)
+ggsave(path = "./DataAnalysis/DGE/visualizations", file = paste0("VolcanoPlot_", names(marker_list[i]), ".pdf"), height = 2.5, width=2.5)
+}
+```
+
+***
+
+# Pathway Analysis
+
+## Using escape R package
+
+```{r eval=F}
+library(escape)
+GS <- getGeneSets(library = c("H", "C3", "C5"), species = "Mus musculus")
+ES <- enrichIt(obj = integrated, gene.sets = GS, groups = 1000, cores = 4)
+ssave(ES, file = "data/ssGSEA_results_MM_H_C357.rda")
+```
+
+
+
+
+```{r}
+##Get ensembl annotation
+library("biomaRt")
+human = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+mouse = useMart("ensembl", dataset = "mmusculus_gene_ensembl")
+
+##Define a function for converting human to mouse genes
+convertHumanGeneList <- function(x){
+
+genesV2 = getLDS(attributes = c("hgnc_symbol"), filters = "hgnc_symbol", values = x , mart = human, attributesL = c("mgi_symbol"), martL = mouse, uniqueRows=T)
+
+humanx <- unique(genesV2[, 2])
+
+return(humanx)
+}
+
+##loop the function from above
+for (i in 2221:10192) {
+    GS[[i]]@geneIds <- convertHumanGeneList(GS[[i]]@geneIds)
+}
+
+save(GS, file = "C5_GSEAlibrary_mouse.rda")
+save(ES, file = "./data/ssGSEA_results_MM_C5.rda")
+```
+
+Differential pathway analysis using linear modeling.
+```{r}
+library(escape)
+load("data/ssGSEA_results_MM_H_C357.rda")
+integrated <- AddMetaData(integrated, ES)
+dir.create("DataAnalysis/GSEA")
+
+ES2 <- integrated[[]]
+ES2 <- ES2[,c("orig.ident", "Type", "Major", "seurat_clusters", colnames(ES))]
+ES2$seurat_clusters <- as.factor(ES2$seurat_clusters) #set clusters IDs to factor instead of numeric
+
+Types <- as.character(unique(ES2$Major))
+for (i in seq_along(Types)) {
+    tmp <- subset(ES2, Major == Types[i])
+    tmp <- getSignificance(tmp, group = "Type", fit = "T.test")
+    write.table(tmp, file=paste("./DataAnalysis/GSEA/Enrichment_ConvMyoC_", Types[i], ".txt", sep=""), sep="\t",append=F)
+}
+```
+
+Graphing the GO terms only
+```{r}
+files <- list.files("./DataAnalysis/GSEA")[-c(12,13)]
+```
+
+```{r}
+library(dplyr)
+names <- stringr::str_split(files, "_", simplify = T)[,3]
+names <- stringr::str_remove(names, ".txt")
+names <- stringr::str_remove(names, " ")
+for (i in seq_along(files)) {
+    tmp <- read.delim(paste0("./DataAnalysis/GSEA/", files[i]))
+    tmp <- tmp[grepl("GO_", rownames(tmp)),]
+    tmp$names <- rownames(tmp)
+    tmp$diff <- tmp$mean_MyoC - tmp$mean_Con
+    tmp$trend <- ifelse(tmp$diff >= 0, "Up", "Down")
+    up <- tmp[tmp$trend == "Up", ]
+    down <- tmp[tmp$trend == "Down", ]
+    up <- subset(up, names != "GO_ADAPTIVE_IMMUNE_RESPONSE_BASED_ON_SOMATIC_RECOMBINATION_OF_IMMUNE_RECEPTORS_BUILT_FROM_IMMUNOGLOBULIN_SUPERFAMILY_DOMAINS")
+    up <- up %>% top_n(-FDR, n=20)
+    up <- up[1:20,]
+    down <- down %>% top_n(-FDR, n=20)
+    down <- down[1:20,]
+    
+    plot1 <- ggplot(up, aes(x=reorder(names, -log10(FDR)), y=-log10(FDR))) + 
+        geom_bar(stat="identity") + 
+        coord_flip() + 
+        theme_classic() + 
+        theme(axis.title.y = element_blank())
+    
+    plot2 <- ggplot(down, aes(x=reorder(names, -log10(FDR)), y=-log10(FDR))) + 
+        geom_bar(stat="identity") + 
+        coord_flip() + 
+        theme_classic() + 
+        theme(axis.title.y = element_blank())
+    
+    ggsave(path = "./DataAnalysis/GSEA/Plots", filename = paste0("Up_GSEAbarplot_", names[i], ".pdf"), plot1, height=5, width=10)
+    
+    ggsave(path = "./DataAnalysis/GSEA/Plots", filename = paste0("Down_GSEAbarplot_", names[i], ".pdf"), plot2, height=5, width=10)
+}
+```
+
+
+
+
+We can also perform principal compoenent analysis to look at differences in enrichment by **Type**, **Major** and by sample run. I added the latter after looking at the plots produced with several cell types have two distinct populations across the **Type** variable. However, this is seen in the **"byOrig.ident"** plots as well, so it is not batch effect. 
+
+```{r}
+dir.create("DataAnalysis/GSEA/PCA")
+gene.sets <- colnames(ES)
+
+for (i in seq_along(Types)) {
+    tmp <- subset(ES2, Major == Types[i])
+    PCA <- performPCA(enriched = tmp, groups = c("Type", "seurat_clusters", "orig.ident"))
+    #plot difference by Type
+    pcaEnrichment(PCA, PCx = "PC1", PCy = "PC2", contours = T, facet = "Type") 
+    ggsave(path="DataAnalysis/GSEA/PCA", file = paste0("GSEA_PCA_", Types[i], "_byType.pdf"), height=3.5, width=7.5)
+    
+    #plot difference by Cluster and Type
+    pcaEnrichment(PCA, PCx = "PC1", PCy = "PC2", contours = T) + 
+        facet_grid(Type~seurat_clusters)
+    ggsave(path="DataAnalysis/GSEA/PCA", file = paste0("GSEA_PCA_", Types[i], "_byClusterType.pdf"), height=7, width=3.75*length(unique(PCA$seurat_clusters)))
+   
+    #plot difference by samples
+    pcaEnrichment(PCA, PCx = "PC1", PCy = "PC2", contours = T) +
+        facet_wrap(~orig.ident)
+     ggsave(path="DataAnalysis/GSEA/PCA", file = paste0("GSEA_PCA_", Types[i], "_byOrig.ident.pdf"), height=7, width=7.5)
+    
+    #Major Contributors to Cell Type PCA
+    masterPCAPlot(tmp, PCx = "PC1", PCy = "PC2", top.contribution = 20)
+    ggsave(path="DataAnalysis/GSEA/PCA", file = paste0("GSEA_masterPCA_", Types[i], "_top20.pdf"), height=8, width=8)
+}
+```
+
+## SCENIC
+
+```{r, eval=FALSE}
+dbFiles <- c("https://resources.aertslab.org/cistarget/databases/mus_musculus/mm9/refseq_r45/mc9nr/gene_based/mm9-500bp-upstream-7species.mc9nr.feather",
+"https://resources.aertslab.org/cistarget/databases/mus_musculus/mm9/refseq_r45/mc9nr/gene_based/mm9-tss-centered-10kb-7species.mc9nr.feather")
+
+for(featherURL in dbFiles)
+{
+  download.file(featherURL, destfile=basename(featherURL)) # saved in current dir
+}
+```
+
+
+```{r}
+counts <- as.matrix(integrated@assays$RNA@counts)
+cellInfo <- integrated[[]][,1:13]
+rm(integrated)
+```
+
+```{r}
+library(SCENIC)
+org="mgi" # or hgnc, or dmel
+dbDir="cisTarget_databases" # RcisTarget databases location
+myDatasetTitle="Cardio" # choose a name for your analysis
+data(defaultDbNames)
+dbs <- defaultDbNames[[org]]
+scenicOptions <- initializeScenic(org=org, dbDir=dbDir, dbs=dbs, datasetTitle=myDatasetTitle, nCores=1)
+
+scenicOptions@inputDatasetInfo$cellInfo <- cellInfo
+colVars <- list(CellType=c("Fibroblast"="forestgreen", 
+                           "Erythroid"="darkorange", 
+                           "Myeloid Cells"="magenta4", 
+                           "Basophils"="hotpink", 
+                           "CD8+ T cells"="red", 
+                           "Neutrophils"="skyblue", 
+                           "ILC"="darkblue", 
+                           "CD4+ T Cells" = "red4", 
+                           "B Cells" = "green", 
+                           "Cardiomyocytes.Endothelial Cells" ="orange",
+                           "NK Cells" = "violet",
+                           "SM cells" = "gold"))
+colVars$CellType <- colVars$CellType[intersect(names(colVars$CellType), cellInfo$Major)]
+plot.new(); legend(0,1, fill=colVars$CellType, legend=names(colVars$CellType))
+
+
+scenicOptions@inputDatasetInfo$colVars <- colVars
+```
+
+
+```{r}
+genesKept <- geneFiltering(counts, scenicOptions=scenicOptions,
+                           minCountsPerGene=3*.01*ncol(counts),
+                           minSamples=ncol(counts)*.01)
+```
+
+```{r}
+exprMat_filtered <- counts[genesKept, ]
+```
+
+```{r}
+corr <- runCorrelation(exprMat_filtered, scenicOptions)
+```
+
+```{r}
+set.seed(123)
+exprMat_filtered <- log2(exprMat_filtered+1) 
+runGenie3(exprMat_filtered, scenicOptions)
+```
+
+
+```{r}
+runCorrelation(exprMat_filtered, scenicOptions)
+```
+
+```{r}
+integrated <- readRDS("data/Seurat_integrated.rds")
+exprMat <- as.matrix(integrated@assays$RNA@counts)
+rm(integrated)
+exprMat_log <- log2(exprMat+1)
+runSCENIC_1_coexNetwork2modules(scenicOptions)
+runSCENIC_2_createRegulons(scenicOptions, coexMethod=c("top50perTarget")) 
+runSCENIC_3_scoreCells(scenicOptions, exprMat_log)
+export2scope(scenicOptions, exprMat)
+runSCENIC_4_aucell_binarize(scenicOptions)
+```
+
+```{r}
+data <- readRDS("./int/tSNE_AUC_50pcs_50perpl.rds")
+```
+
+
+```{r}
+library(Seurat)
+integrated <- readRDS("data/Seurat_integrated.rds")
+dr_coords <- Embeddings(integrated, reduction="UMAP")
+
+tfs <- c("Sox10","Irf1","Sox9", "Dlx5")
+par(mfrow=c(2,2))
+AUCell::AUCell_plotTSNE(dr_coords, cellsAUC=selectRegulons(regulonAUC, tfs), plots = "AUC")
+```
+
+
+```{r}
+loom <- open_loom(loomPath, mode="r")
+exprMat <- get_dgem(loom)
+close_loom(loom)
+# Optional: log expression (for TF expression plot, it does not affect any other calculation)
+logMat <- log2(exprMat+1)
+dim(exprMat)
+```
+
+```{r}
+scenicOptions <- readRDS("int/scenicOptions.Rds")
+scenicOptions@settings$verbose <- TRUE
+scenicOptions@settings$nCores <- 10
+scenicOptions@settings$seed <- 123
+
+runSCENIC_1_coexNetwork2modules(scenicOptions)
+runSCENIC_2_createRegulons(scenicOptions, coexMethod=c("top5perTarget")) #** Only for toy run!!
+runSCENIC_3_scoreCells(scenicOptions, logMat)
+```
+
+
+```{r}
+aucell_regulonAUC <- loadInt(scenicOptions, "aucell_regulonAUC")
+AUC <- as.data.frame(t(aucell_regulonAUC@assays@data$AUC))
+save(AUC, file = "SCENIC_output.rda")
+merge <- merge(AUC, cellInfo, by = "row.names")                   
+```
+
+```{r}
+library(dplyr)
+merge <- merge[,colnames(merge) %in% c("Major", "Type", colnames(AUC))]
+table <- merge %>%
+  group_by(Type, Major) %>%
+  summarise(across(1:61, mean))
+table <- as.data.frame(table)
+for (i in 3:ncol(table)) {
+  table[,i] <- as.numeric(table[,i])
+}
+normalize <- function(x)
+{
+    (x- min(x)) /(max(x)-min(x))
+}
+
+for (i in 3:ncol(table)) {
+  table[,i] <- normalize(as.numeric(table[,i]))
+}
+annot <- table[,1:2]
+rownames(annot) <- paste0("X", 1:24)
+table2 <- t(table[,3:63])
+colnames(table2) <- paste0("X", 1:24)
+pdf("AUC_SCENIC.pdf", height=5, width=4)
+pheatmap::pheatmap(table2, annotation = annot, show_colnames = FALSE, fontsize = 4, color = rev(colorblind_vector(50)))
+dev.off()
+```
+
+## Cell Cycle 
+
+Cell cycle regression as described in the [Satija lab website](https://satijalab.org/seurat/v3.1/cell_cycle_vignette.html). Becasue we are using mice instead of humans, the below block of code calls the cc.genes, then formats the genes to match the gene nomenclature for mice. 
+
+```{r}
+firstup <- function(x) {
+  substr(x, 1, 1) <- toupper(substr(x, 1, 1))
+  x
+}
+cc.genes <- Seurat::cc.genes.updated.2019
+s.genes <- firstup(tolower(cc.genes$s.genes))
+g2m.genes <- firstup(tolower(cc.genes$g2m.genes))
+```
+
+Now we can perform cell cycle scoring with the genes. For now, I am not going to regress using the assingments or save the integrated object with the calculations.
+
+```{r}
+cellCycle <- CellCycleScoring(integrated, s.features = s.genes, g2m.features = g2m.genes, set.ident = TRUE)
+```
+
+Like above with the contribution by condition (**Type**), we can now look at the phases assignments by cluster and condition. We do not need to scale if we seperate **Type** into seperate bar graphs.
+
+```{r}
+dir.create("DataAnalysis/CellCycle")
+freq_table <- cellCycle[[]]
+freq_table <- freq_table[,c("Type", "old.ident", "Phase")]
+freq_table <- subset(freq_table, Phase != "Undecided") #removing undecided phases
+freq_table <- freq_table %>%
+    group_by(Type, old.ident, Phase) %>%
+    summarise(n = n())
+
+freq_table$Phase <- factor(freq_table$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+ggplot(freq_table, aes(x=old.ident, y=n, fill=Phase)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank())+ 
+    facet_grid(Type ~.) + 
+   scale_fill_manual(values=colorblind_vector(3)) + 
+  theme_classic()
+ggsave(path = "DataAnalysis/CellCycle", file = "CellCycle_byCluster.pdf", height=4, width=6)
+```
+
+We can now look at the phases assignments by cell type assignments and condition.
+
+```{r}
+freq_table <- cellCycle[[]]
+freq_table <- freq_table[,c("Type", "Major", "Phase")]
+freq_table <- subset(freq_table, Phase != "Undecided") #removing undecided phases
+freq_table <- freq_table %>%
+    group_by(Type, Major, Phase) %>%
+    summarise(n = n())
+freq_table$Phase <- factor(freq_table$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+ggplot(freq_table, aes(x=Major, y=n, fill=Phase)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank())+ 
+    facet_grid(Type ~.) + 
+   scale_fill_manual(values=colorblind_vector(3)) + 
+  theme_classic() + 
+    coord_flip()
+ggsave(path = "DataAnalysis/CellCycle", file = "CellCycle_byMajorType.pdf", height=5, width=6)
+```
+
+Lastly, we can look at the UMAP distribution of cell cycle phases using the *Dimplot()* function. First I subset the cellCycle seruat object to remove phases assigned as "Undecided", it messes with the color scheme.
+
+```{r}
+cellCycle <- subset(cellCycle, Phase != "Undecided")
+cellCycle$Phase <- factor(cellCycle$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+DimPlot(object = cellCycle, reduction = 'umap', group.by = "Phase", split.by = "Type") +
+    scale_color_manual(values=colorblind_vector(3)) 
+ggsave(path = "DataAnalysis/CellCycle", filename="Myo_CellCycle_UMAP_res6.pdf", width=7.25, height=3)
+```
+
+***
+
+#Sub-cluster and Cell Trajectory or Velocity Analysis
+
+
+## CD4+ and CD8+ T cells
+
+Isolating just the T cells, stripping the seurat object of non-"RNA" values using *DietSeurat()* and then spliting the object to create a list that can be fed into **SCTransform()**
+```{r eval=FALSE}
+cells <- integrated[[]]
+cells <- subset(cells, Major == "CD8+ T cells" | Major == "CD4+ T Cells" )
+cells <- row.names(cells)
+subset_Tcells <- subset(integrated, cells = cells)
+subset_Tcells <- DietSeurat(subset_Tcells, assays = "RNA")
+T.list <- SplitObject(object = subset_Tcells , split.by = "orig.ident")
+
+for (i in 1:length(T.list)) {
+    T.list[[i]] <- SCTransform(T.list[[i]], verbose = FALSE)
+}
+rm(subset_Tcells)
+```
+
+Integrating the data as above with the whole data set.
+```{r eval = FALSE}
+features <- SelectIntegrationFeatures(object.list = T.list, nfeatures = 3000)
+T.list <- PrepSCTIntegration(object.list = T.list, anchor.features = features,
+verbose = FALSE)
+T.anchors <- FindIntegrationAnchors(object.list = T.list, normalization.method = "SCT",
+anchor.features = features, verbose = FALSE)
+Tcells <- IntegrateData(anchorset = T.anchors, normalization.method = "SCT", verbose = FALSE)
+rm(T.list)
+rm(T.anchors)
+```
+
+Now we can process the intgreated T cells and identify clusters.
+```{r eval = FALSE}
+Tcells <- ScaleData(object = Tcells, verbose = FALSE)
+Tcells <- RunPCA(object = Tcells, npcs = 40, verbose = FALSE)
+Tcells <- RunUMAP(object = Tcells, reduction = "pca", 
+    dims = 1:30)
+Tcells <- FindNeighbors(object = Tcells, dims = 1:40, force.recalc = T)
+Tcells <- FindClusters(object = Tcells, resolution = 0.6, force.recalc=T)
+
+
+dir.create("DataAnalysis/subCluster")
+dir.create("DataAnalysis/subCluster/Tcells")
+```
+
+```{r}
+Tcells <- readRDS("./DataAnalysis/subCluster/Tcells/Tcells_integrated.rds")
+```
+
+Visualization of the clusters, orig.ident and **Type** on the UMAP. Based on this, we see a nice integrated of runs, but a clear difference in the **Type** in clusters 1, 2, 4, and 6.
+```{r}
+update_geom_defaults("point", list(stroke=0.1))
+DimPlot(object = Tcells, reduction = 'umap', label = T) + NoLegend()
+ggsave(path = "DataAnalysis/subCluster/Tcells", filename="Tcells_UMAP_res6.eps", width=3.5, height=3)
+
+DimPlot(object = Tcells, reduction = 'umap', group.by = "orig.ident") 
+ggsave(path = "DataAnalysis/subCluster/Tcells", filename="Tcells_orig.ident_UMAP_res6.eps", width=3.75, height=3)
+
+DimPlot(object = Tcells, reduction = 'umap', group.by = "Type", split.by = "Type") + scale_color_manual(values = rev(colorblind_vector(2))) 
+ggsave(path = "DataAnalysis/subCluster/Tcells", filename="Tcells_Type_UMAP_res6.eps", width=7.25, height=3)
+```
+
+###Expression Markers in T cells
+
+Like above we also want to look at the expression markers that define clusters and T cell subtypes. First we will make the schex-based reductions. 
+
+```{r}
+suppressPackageStartupMessages(library(schex))
+Tcells <- make_hexbin(Tcells, 80, dimension_reduction = "UMAP")
+```
+
+Here is a list I use in T cell identification, we can run these first and store them in the selected folder.
+
+```{r}
+genelist <- c("Cd8a", "Cd8b1", "Cd4", "Cd3d", "Foxp3", "Il2ra", "Il7r", "Ccr7", "Ccl4", "Gata3", "Tbx21",  "Cd44", "Cd28", "Sell", "Fas", "Ctla4", "Pdcd1", "Icos", "Havcr2", "Entpd1", "Tigit", "Cd244", "Eomes", "Cd160", "Il10", "Smad3", "Klrg1", "Itga4", "Ifna1", "Ifng", "Cxcr3", "Ccr5", "Il12rb2", "Il18ra", "Il27a", "Stat1", "Stat4", "Ccr3", "Ccr4", "Ccr6", "Ccr10", "Ccr8", "Stat5", "Stat6", "Il4", "Il5", "Il6", "Il9", "Il10", "Il13", "Il17a", "Il17f", "Il21", "Il22", "Tgfbr2", "Ccl20", "Ccl22", "Rorgt", "Rora", "Rorc", "Stat3", "Tnfsf8", "Cxcr5", "Cxcr6", "Maf", "Bcl6", "Gzmb", "Prf1", "Ms4a4b", "Nfat", "Blimp1", "Batf", "Trgc1", "Trgc2", "Trdc", "Il23r", "Top2a", "Birc5", "Cxcl13", "Trac", "Trbc1", "Trbc2", "Cd52", "Nkg7", "Gapdh", "Igfbp4", "Nfkbia", "Ifi27l2a", "Tnfrsf4")
+genelist <- unique(genelist)
+
+
+dir.create("DataAnalysis/subCluster/Tcells/markers")
+dir.create("DataAnalysis/subCluster/Tcells/markers/selected")
+
+DefaultAssay(Tcells) <- "RNA"
+
+for (i in seq_along(genelist)) {
+        if (length(which(rownames(Tcells@assays$RNA@counts) == genelist[i])) == 0){
+            next() #Need to loop here because plot_hexbin_feature() does not have a built-in function to deal with absence of selected gene
+        } else {
+        plot <- plot_hexbin_feature(Tcells, feature = genelist[i], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/subCluster/Tcells/markers/selected", file = paste0( genelist[i], "_prop.pdf"), plot, height=3, width=3.25)
+        }
+    }
+
+```
+
+
+We can also look at the top markers for each cluster by using the *FindAllMarkers()* call.
+
+```{r}
+All.markers <- FindAllMarkers(Tcells, assay = "RNA", pseudocount.use = 0.1, only.pos = T) 
+write.table(All.markers, file = "DataAnalysis/subCluster/Tcells/markers/FindAllMarkers_output.txt", col.names=NA, sep="\t",append=F)
+```
+
+Now we can loop through the top markers. Unlike the global UMAP, I am going to select the top 10 markers. We have less clusters, so 10x9 seems like a reasonable number of graphs to parse through.
+
+```{r}
+All.markers <- read.delim("./DataAnalysis/subCluster/Tcells/markers/FindAllMarkers_output.txt")
+top10 <- All.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_logFC)
+top10 <- top10$gene #just want the IDs
+
+dir.create("DataAnalysis/subCluster/Tcells/markers/TopClusterMarkers")
+for (i in seq_along(top10)) {
+    plot <- plot_hexbin_feature(Tcells, feature = top10[i], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/subCluster/Tcells/markers/TopClusterMarkers", file = paste0("Top10markers", "_", top10[i], "_prop.pdf"), plot, height=3, width=3.25)
+}
+```
+
+```{r}
+top8 <- All.markers %>% group_by(cluster) %>% top_n(n = 8, wt = avg_logFC)
+DotPlot(Tcells, features = unique(top8$gene)) + coord_flip() + 
+    scale_color_gradientn(colors = rev(colorblind_vector(11))) + 
+    guides(color = F, size = F) +
+    scale_size(range = c(0.5,3.5))
+ggsave(path = "DataAnalysis/subCluster/Tcells/markers/", file = "Top8_dotplot.eps", height=8, width=3)
+```
+
+Based on some non-inutive findings, we just want to graph Clusters 5 and 7 real quick. We want to comapare the expression of Trbc2 (TCR beta constant region) with the expression of genes from other lineages that are top hits for these clusters. 
+
+```{r}
+Cluster5 <- subset(Tcells, idents = 5)
+Cluster7 <- subset(Tcells, idents = 7)
+outliers <- merge(Cluster5, Cluster7)
+
+list <- c("S100a8", "S100a9", "Cd33", "Csf3r", "Trem1", "Mmp9", "Clec4d", "Cd14", "Col6a2", "Col4a1", "Lhfp", "Lrp1", "Pcsk6", "Nfib", "Bicc1")
+    
+for (i in seq_along(list)) {
+FeatureScatter(outliers, feature1 = "Trbc2", feature2 = list[i]) + theme(plot.title = element_blank())
+ggsave(path = "DataAnalysis/subCluster/Tcells/markers", file = paste0("ScatterPlot_Cluster5n7check_TRBCv", list[i], ".pdf"), height=2.5, width=3)
+}
+```
+
+
+### Proportion of clusters by condition
+
+```{r}
+#Total in control 9734
+#Total in Myo 13251
+
+freq_table <- table(Tcells@active.ident, Tcells$Type)
+
+#Occured to me that this is biased by cell type, need to scale by size of all cells
+
+mTotal <- 13251
+cTotal <- 9734
+totals <- c(cTotal,mTotal)
+
+for (i in 1:2) { 
+    freq_table[,i] <- freq_table[,i]/totals[i]
+}
+
+#Getting scaled values
+#for (i in 1:2) { 
+    #freq_table[,i] <- freq_table[,i]/sum(freq_table[,i])
+#}
+
+freq_table <- reshape2::melt(freq_table)
+
+ggplot(freq_table, aes(x=as.factor(Var1), y=value, fill=Var2)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    xlab("Clusters") + 
+    coord_flip() 
+ggsave(path = "DataAnalysis/subCluster/Tcells/", file = "relativeContribution_byClusterType_scaled.pdf", height=5, width=5)
+
+
+ggplot(freq_table, aes(x=as.factor(Var1), y=value, fill=Var2)) + 
+  geom_bar(stat="identity", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    xlab("Clusters") + 
+    coord_flip()
+ggsave(path = "DataAnalysis/subCluster/Tcells/", file = "totalContribution_byClusterType_scaled.pdf", height=5, width=5)
+```
+
+See above for the basis of this system.
+
+```{r}
+table <- table(Tcells@active.ident, Tcells$Type)
+
+Con <- 9734 #Sum of Healthy Cells
+MyoC <- 13251 #Sum of Sick Cells
+
+out <- NULL
+mat <- NULL
+for (i in 1:nrow(table)) {
+x <- c(Con, MyoC, table[i,1], table[i,2])
+dim(x) <- c(2,2)
+
+test <- prop.test(x[,2], n=x[,1], p = NULL, correct = FALSE)
+
+out <- c(test$p.value, test$estimate[1], test$estimate[2], test$conf.int[1], test$conf.int[2])
+mat <- rbind(mat, out)
+}
+mat <- as.data.frame(mat)
+
+
+colnames(mat) <- c("Pvalue", "Prop_Con", "Prop_MyoC", "OR_low", "OR_high")
+mat$FDR <- p.adjust(mat$Pvalue) #Need to correct for multiple comparisons
+mat$clusters <- rownames(table)
+write.table(mat, file = "./DataAnalysis/subCluster/Tcells/ProportionTest_clusters.txt", col.names=NA, sep="\t",append=F)
+```
+
+### Cell Cycle Scoring
+```{r}
+Tcells <- CellCycleScoring(Tcells, s.features = s.genes, g2m.features = g2m.genes, set.ident = FALSE)
+```
+
+```{r}
+dir.create("./DataAnalysis/subCluster/Tcells/CellCycle")
+Tcells@meta.data$TcellCluster <- Tcells@active.ident
+freq_table <- Tcells[[]]
+freq_table <- freq_table[,c("Type", "TcellCluster", "Phase")]
+freq_table <- subset(freq_table, Phase != "Undecided") #removing undecided phases
+freq_table <- freq_table %>%
+    group_by(Type, TcellCluster, Phase) %>%
+    summarise(n = n())
+
+freq_table$Phase <- factor(freq_table$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+ggplot(freq_table, aes(x=TcellCluster, y=n, fill=Phase)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank())+ 
+    facet_grid(Type ~.) + 
+   scale_fill_manual(values=colorblind_vector(3)) + 
+  theme_classic()
+ggsave(path = "DataAnalysis/subCluster/Tcells/CellCycle", file = "CellCycle_byCluster.pdf", height=4, width=6)
+```
+
+```{r}
+#Tcells <- subset(Tcells, Phase != "Undecided")
+Tcells$Phase <- factor(Tcells$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+DimPlot(object = Tcells, reduction = 'umap', group.by = "Phase", split.by = "Type") +
+    scale_color_manual(values=colorblind_vector(3)) 
+
+
+ggsave(path = "DataAnalysis/subCluster/Tcells/CellCycle", filename="CellCycle_UMAP_res6.pdf", width=7.25, height=3)
+```
+
+### Differential Gene Expression by Cluster
+
+```{r}
+dir.create("./DataAnalysis/subCluster/Tcells/DGE")
+clusters <- as.character(unique(Tcells@active.ident))
+DefaultAssay(Tcells) <- "RNA"
+
+mat <- NULL
+for (i in seq_along(clusters)) {
+    tmp <- subset(Tcells, idents = clusters[i])
+    tmp <- NormalizeData(tmp, assay = "RNA") #after subset always normalize RNA
+    tmp <- SetIdent(tmp, value = tmp@meta.data$Type)
+    markers <- FindMarkers(object = tmp, 
+                only.pos = F, ident.1 = "MyoC", ident.2="Con", min.diff.pct = -Inf, 
+                logfc.threshold = -Inf, min.pct = -Inf)
+    markers$names <- rownames(markers)
+    markers  <- markers  %>%
+        mutate(Difference = pct.1 - pct.2)
+    
+    mat <- data.frame(markers)
+    write.table(mat, file=paste("./DataAnalysis/subCluster/Tcells/DGE/Tcell_differentialMarkers_MyoCvCon_", clusters[i], ".txt", sep=""),
+                sep="\t",append=F, row.names = FALSE)
+    mat=NULL
+}
+```
+
+
+#### Visulizing the differential genes
+
+Quick load all the results into a list, similar to the code above the integrated data analysis with some modification
+```{r}
+file_list <- list.files("./DataAnalysis/subCluster/Tcells/DGE/")
+file_list <- file_list[grepl("differentialMarkers", file_list)]
+files <- file.path(paste0("./DataAnalysis/subCluster/Tcells/DGE/", file_list))
+
+marker_list <- list()
+for (i in 1:length(files)) {
+    marker_list[[i]] <- read.delim(files[i])
+}
+names(marker_list) <- paste0("C", 0:8)#assign the cell type to each element of the list
+```
+
+Going to make 2 different plots, the first will take the percent difference from Myocarditis versus healthy cells and place that delta on the x-axis with fold-change on the y-axis. The other graph will be the typical volcano plot. Gene labeling is based first on siginificance and then on the weight of fold-change + 4xDelta Percent. The latter is such that we want to find genes that are not only upregulated by good markers for myocarditis. 
+
+```{r}
+library(ggrepel)
+dir.create("DataAnalysis/subCluster/Tcells/DGE/visualizations")
+
+for (i in seq_along(marker_list)) {
+tmp <- marker_list[[i]]
+filter_up <- subset(tmp, p_val_adj <= 0.05 & avg_logFC > 0)
+filter_down <- subset(tmp, p_val_adj <= 0.05 & avg_logFC < 0)
+top10 <- filter_up %>% top_n(n =10, wt = avg_logFC + 4*Difference)
+bottom10 <- filter_down %>% top_n(n =10, wt = -(avg_logFC + 4*Difference))
+
+
+ggplot(tmp, aes(x=Difference, y=avg_logFC)) + 
+  geom_point(size=0.5, color="#999999") + 
+    geom_point(data = subset(tmp, names %in% filter_up$names), size=0.75, color = colorblind_vector(1)) + 
+    geom_point(data = subset(tmp, names %in% filter_down$names),size=0.75, color = rev(colorblind_vector(2))[1]) + 
+  theme_classic() + 
+    geom_hline(yintercept = 0, lty = 2) + 
+    geom_vline(xintercept = 0, lty = 2)  + 
+    geom_text_repel(data=subset(tmp, names %in% c(top10$names, bottom10$names)), aes(label=names), segment.size = 0.25, size=2.5)
+ggsave(path = "./DataAnalysis/subCluster/Tcells/DGE/visualizations", file = paste0("pctDifference_vs_foldchange_", names(marker_list[i]), "_Up.pdf"), height = 2.5, width=2.5)
+
+ggplot(tmp, aes(x=Difference, y=avg_logFC)) + 
+  geom_point(size=0.5, color="#999999") + 
+  theme_classic() + 
+    geom_hline(yintercept = 0, lty = 2) + 
+    geom_vline(xintercept = 0, lty = 2)  + 
+    geom_text_repel(data=subset(tmp, names %in% bottom10$names), aes(label=names), segment.size = 0.25, size=2.5)
+ggsave(path = "./DataAnalysis/subCluster/Tcells/DGE/visualizations", file = paste0("pctDifference_vs_foldchange_", names(marker_list[i]), "_Down.pdf"), height = 2.5, width=2.5)
+
+tmp <- tmp %>%
+    mutate(p_val_adj = ifelse(p_val_adj == 0, min(p_val_adj), p_val_adj)) #mutate the p-values that are lower than detection
+
+ggplot(tmp, aes(x=avg_logFC, y=-log10(p_val_adj))) + 
+    geom_point(size=0.5, color="#999999") + 
+    theme_classic() + 
+    scale_y_sqrt() +
+    geom_vline(xintercept = 0, lty = 2) + 
+    geom_hline(yintercept = 1.3, lty = 2) + 
+    geom_text_repel(data=tmp[tmp$names %in% c(as.character(top10$names), as.character(bottom10$names)),], aes(label=names), segment.size = 0.25, size=2)
+ggsave(path = "./DataAnalysis/subCluster/Tcells/DGE/visualizations", file = paste0("VolcanoPlot_", names(marker_list[i]), ".pdf"), height = 2.5, width=2.5)
+}
+```
+
+We can also look a common gene regulation using the upsetR approach that looks at the intersection of differentially-regulated genes.
+
+```{r}
+library(UpSetR)
+cells <- names(marker_list)
+gene_list <- list()
+for (i in seq_along(marker_list)) {
+    tmp <- marker_list[[i]]
+    up <- subset(tmp, p_val_adj  < 0.05 & avg_logFC >= 0.2)
+    up <- up$names
+    down <- subset(tmp, p_val_adj  < 0.05 & avg_logFC <= -0.2)
+    down <- down$names
+    gene_list[[paste0("Up_", cells[i])]] <- up
+    gene_list[[paste0("Down_", cells[i])]] <- down
+}
+postscript(file="./DataAnalysis/subCluster/Tcells/DGE/visualizations/TcellClusters_overlap_plot.eps", onefile=FALSE, width=6, height=5)
+upset(fromList(gene_list), order.by = "freq", nintersects = NA, nsets = 50)
+dev.off()
+```
+
+Previously in the integrated analysis, we performed differential gene expression between major types of cells comparing Myocarditis with Controls. We made both difference plots and volcano plots, but now I just want to graph the top 10-20 markers in both conditions, to have on hand or throw in a supplemental. 
+
+```{r}
+CD4 <- read.delim("~/Documents/GitHub/Lasrado_Myocarditis/DataAnalysis/DGE/cellType_differentialMarkers_MyoCvCon_CD4+\ T\ cells.txt") 
+
+CD8 <- read.delim("~/Documents/GitHub/Lasrado_Myocarditis/DataAnalysis/DGE/cellType_differentialMarkers_MyoCvCon_CD8+\ T\ cells.txt")
+cells <- c("CD4", "CD8")
+list <- list(CD4, CD8)
+for (i in seq_along(list)) {
+    tmp <- list[[i]]
+    tmp <- tmp %>%
+        mutate(Trend = ifelse(p_val_adj <= 0.05 & avg_logFC > 0, "Up",
+                    ifelse(p_val_adj <= 0.05 & avg_logFC < 0, "Down", "None")))
+    filter <- subset(tmp, p_val_adj <= 0.05)
+    top15 <- filter %>% top_n(n =15, wt = avg_logFC)
+    bottom15 <- filter %>% top_n(n =15, wt = -avg_logFC)
+    names <- c(as.character(bottom15$names), as.character(top15$names))
+ 
+    ggplot(data = tmp[tmp$names %in% names,], aes(x=reorder(names, avg_logFC), y = avg_logFC)) + 
+        geom_bar(stat = "identity", aes(fill = Trend), color="black") + 
+        geom_hline(yintercept = 0) + 
+        coord_flip() + 
+        theme_classic() + 
+        theme(axis.title = element_blank()) + 
+        scale_fill_manual(values = rev(colorblind_vector(2))) +
+        guides(fill = F)
+    ggsave(path = "./DataAnalysis/subCluster/Tcells/DGE/visualizations", file = paste0(cells[i], "_OverallTopMarkers.pdf"), height = 5, width=3)
+}
+
+
+
+```
+
+We can also look at the intersection of these differentially regulated genes using the upset plot.
+
+```{r}
+library(UpSetR)
+cells <- c("CD4", "CD8")
+gene_list <- list()
+
+for (i in seq_along(list)) {
+    tmp <- list[[i]]
+    up <- subset(tmp, p_val_adj  < 0.05 & avg_logFC >= 0.5)
+    up <- up$names
+    down <- subset(tmp, p_val_adj  < 0.05 & avg_logFC <= -0.5)
+    down <- down$names
+    gene_list[[paste0("Up_", cells[i])]] <- up
+    gene_list[[paste0("Down_", cells[i])]] <- down
+}
+postscript(file="./DataAnalysis/subCluster/Tcells/DGE/visualizations/CD4vCD8_overlap_plot.eps", onefile=FALSE, width=6, height=5)
+upset(fromList(gene_list), order.by = "freq", nintersects = NA)
+dev.off()
+
+```
+
+### Pathway Analysis
+
+We have actually already run the ssGSEA for all cells in the integrated portion of the analysis, so now we just need to load it here. 
+
+```{r}
+library(escape)
+load("data/ssGSEA_results_MM_H_C2.rda")
+gs <- colnames(ES) #grab the gene set names 
+Tcells <- AddMetaData(Tcells, ES)
+ES<- Tcells[[]]
+ES$S.Score <- as.character(ES$S.Score)
+ES$G2M.Score <- as.character(ES$G2M.Score)
+ES <- ES[,-c(2:5)]
+
+dir.create("DataAnalysis/subCluster/Tcells/GSEA")
+
+output_cluster <- getSignificance(ES, group = "TcellCluster", fit = "ANOVA")
+write.table(output_cluster, file = "DataAnalysis/subCluster/Tcells/GSEA/lmfit_byCluster.txt", col.names=NA, sep="\t",append=F)
+output_Type <- getSignificance(ES, group = "Type", fit = "T.test")
+write.table(output_Type, file = "DataAnalysis/subCluster/Tcells/GSEA/lmfit_byType.txt", col.names=NA, sep="\t",append=F)
+```
+
+
+```{r}
+dataFrame <- NULL
+GS <- getGeneSets(library = c("H", "C2"), species = "Mus musculus")
+for (i in seq_along(GS)) {
+    length <- length(GS[[i]]@geneIds)
+    setName <- GS[[i]]@setName
+    out <- c(setName, length)
+    dataFrame <- rbind(dataFrame, out)
+}
+dataFrame <- as.data.frame(dataFrame)
+colnames(dataFrame) <- c("gene.set", "length")
+
+output_cluster <- merge(output_cluster, dataFrame, by.x = "row.names", by.y = "gene.set")
+output_Type <- merge(output_Type, dataFrame, by.x = "row.names", by.y = "gene.set")
+write.table(output_Type, file = "DataAnalysis/subCluster/Tcells/GSEA/lmfit_byType.txt", col.names=NA, sep="\t",append=F)
+write.table(output_cluster, file = "DataAnalysis/subCluster/Tcells/GSEA/lmfit_byCluster.txt", col.names=NA, sep="\t",append=F)
+```
+
+
+```{r}
+output_Type$delta <- output_Type[,"mean_MyoC"] - output_Type[,"mean_Con"]
+output_Type <- output_Type %>%
+    mutate(Sig = ifelse(FDR < 0.05, "Yes", "No"))
+```
+
+```{r}
+
+gs1 <- gs[grep("BIOCARTA|HALLMARK", gs)] #Isolating Biocarta and hallmark
+
+for (i in seq_along(gs1)) {
+    
+ridgeEnrichment(ES, group = "TcellCluster", gene.set = gs1[i])
+    ggsave(path = "DataAnalysis/subCluster/Tcells/GSEA", filename = paste0("GSEA_ridge_Clusters_", gs1[i], ".pdf"), height=4, width=4)
+    
+ridgeEnrichment(ES, group = "Type", gene.set = gs1[i])
+ ggsave(path = "DataAnalysis/subCluster/Tcells/GSEA", filename = paste0("GSEA_ridge_Type_", gs1[i], ".pdf"), height=4, width=4)
+
+}
+
+```
+
+
+I found a publication [here](https://pubmed.ncbi.nlm.nih.gov/25031303/) that examines expression changes in the hear using microarray of infection-induced murine model. Pulling the upregulating genes at the 3 time points, we can create gene sets and look at enirchment across each cluster.
+
+```{r}
+GSE53607 <- read.delim("./data/GSE53607_genes.txt")
+names <- colnames(GSE53607)
+set.list <- list()
+for (i in 1:length(names)) {
+  out <- GSE53607[,i]
+  out <- as.character(out)
+  out <- out[out != ""] 
+  out <- unique(out)
+  out <- tolower(out)
+  out <- paste(toupper(substring(out, 1,1)), substring(out, 2), sep="")
+  set.list[[i]] <- GSEABase::GeneSet(out, setName=paste(names[i]))
+}
+```
+
+Calculating the single-sample GSEA, attaching to meta data
+```{r}
+library(escape)
+enrich <- enrichIt(Tcells, gene.sets = set.list)
+meta <- Tcells[[]]
+merged <- merge(meta, enrich, by = "row.names")
+merged <- merged[,c("TcellCluster", "Type", "Up_4", "Up_7", "Up_60")]
+
+```
+
+
+
+```{r}
+hm_df <- merged %>%
+    group_by(Type, TcellCluster) %>%
+    summarise_each(funs(median))
+melt_hm <- reshape2::melt(hm_df)
+melt_hm$column <- paste0(melt_hm$variable, "_", melt_hm$Type)
+
+melt_hm$column <- factor(melt_hm$column, levels = c("Up_4_Con", "Up_7_Con", "Up_60_Con", "Up_4_MyoC", "Up_7_MyoC", "Up_60_MyoC"))
+
+ggplot(melt_hm, aes(x=variable, y = TcellCluster)) + 
+    geom_tile(aes(fill = value)) + 
+    theme_classic() +
+    scale_fill_gradientn(colors = rev(colorblind_vector(11)))
+ggsave(path = "./DataAnalysis/subCluster/Tcells/GSEA", file = "GSE53607_heatmap.pdf", height=5, width=4)
+
+ggplot(melt_hm, aes(x=column, y = TcellCluster)) + 
+    geom_tile(aes(fill = value)) + 
+    theme_classic() +
+    scale_fill_gradientn(colors = rev(colorblind_vector(11)))
+ggsave(path = "./DataAnalysis/subCluster/Tcells/GSEA", file = "GSE53607_heatmap_splitby_Type.pdf", height=5, width=4)
+```
+
+
+```{r}
+
+ridgeEnrichment(merged, gene.set = "Up_4", group = "TcellCluster", facet = "Type", add.rug = T) + 
+    scale_y_discrete(limits = rev(levels(as.factor(merged$TcellCluster)))) + 
+    scale_fill_manual(values = scales::hue_pal()((9)))
+ggsave(path = "./DataAnalysis/subCluster/Tcells/GSEA", file = "GSE53607_Ridge_Up4.pdf", height=5, width=4)
+
+ridgeEnrichment(merged, gene.set = "Up_7", group = "TcellCluster", facet = "Type", add.rug = T) + 
+scale_y_discrete(limits = rev(levels(as.factor(merged$TcellCluster)))) + 
+    scale_fill_manual(values = scales::hue_pal()((9)))
+ggsave(path = "./DataAnalysis/subCluster/Tcells/GSEA", file = "GSE53607_Ridge_Up7.pdf", height=5, width=4)
+```
+
+```{r}
+line <- median(merged$Up_4)
+splitEnrichment(merged, gene.set = "Up_4", x.axis = "TcellCluster", split = "Type") +
+    geom_hline(yintercept = line, lty = 2)
+ggsave(path = "./DataAnalysis/subCluster/Tcells/GSEA", file = "GSE53607_Split_Up4.pdf", height=2.5, width=3.5)
+
+line <- median(merged$Up_7)
+splitEnrichment(merged, gene.set = "Up_7", x.axis = "TcellCluster", split = "Type")+
+    geom_hline(yintercept = line, lty = 2)
+ggsave(path = "./DataAnalysis/subCluster/Tcells/GSEA", file = "GSE53607_Split_Up7.pdf", height=2.5, width=3.5)
+```
+
+### Constructing Trajectory
+
+#### monocle3 require 3 objects to load into their cds object: 1) expression matrix, 2) meta data, and 3) gene annotation.
+
+```{r}
+dir.create("DataAnalysis/subCluster/Tcells/monocle3")
+library(monocle3)
+expr_matrix <- Tcells@assays$RNA@counts
+metadata <- Tcells[[]]
+genes <- data.frame(gene_short_name = rownames(Tcells[["RNA"]]),
+                             row.names = rownames(Tcells[["RNA"]]))
+
+cds <- new_cell_data_set(expr_matrix,
+                         cell_metadata = metadata,
+                         gene_metadata = genes)
+```
+
+
+```{r}
+cds <- preprocess_cds(cds, num_dim = 50)
+cds <- align_cds(cds, alignment_group = "orig.ident", residual_model_formula_str = "~ Type")
+
+cds <- reduce_dimension(cds)
+cds <- learn_graph(cds)
+
+plot_cells(cds, label_groups_by_cluster=FALSE,  color_cells_by = "Type") + 
+                scale_color_manual(values = rev(colorblind_vector(2))) 
+ggsave(path = "DataAnalysis/subCluster/Tcells/monocle3", filename="Tcells_UMAP_monocle_byType.eps", width=3.5, height=3)
+plot_cells(cds, label_groups_by_cluster=FALSE,  color_cells_by = "TcellCluster")
+ggsave(path = "DataAnalysis/subCluster/Tcells/monocle3", filename="Tcells_UMAP_monocle_byTcellCluster.eps", width=3.5, height=3)
+```
+
+#### Slingshot
+
+```{r}
+dir.create("./DataAnalysis/subCluster/Tcells/slingshot")
+
+sce <- as.SingleCellExperiment(Tcells) 
+
+sds <- slingshot(Embeddings(Tcells, "umap"), clusterLabels = Tcells@active.ident, allow.breaks = TRUE, stretch = 0, reducedDim = "UMAP", start.clus = 0) #Calcualting the trajectory
+```
+
+```{r}
+library(scales)
+#Making plots more siminmar to ggplot outputs of Seurat
+cell_pal <- function(cell_vars, pal_fun,...) {
+  if (is.numeric(cell_vars)) {
+    pal <- pal_fun(100, ...)
+    return(pal[cut(cell_vars, breaks = 100)])
+  } else {
+    categories <- sort(unique(cell_vars))
+    pal <- setNames(pal_fun(length(categories), ...), categories)
+    return(pal[cell_vars])
+  }
+}
+#We need color palettes Leiden clusters. These would be the same colors seen in the Seurat plots.
+
+cell_colors_clust <- cell_pal(Tcells@active.ident, hue_pal())
+
+pdf("./DataAnalysis/subCluster/Tcells/slingshot/Trajectory.pdf", height=4, width=4)
+plot(reducedDim(sds), col = cell_colors_clust, pch = 16, cex = 0.25)
+lines(sds, lwd = 2, type = 'lineages', col = 'black')
+dev.off()
+
+plot(reducedDim(sds), col = cell_colors_clust, pch = 16, cex = 0.5)
+lines(sds, lwd = 2, col = 'black')
+
+plot(reducedDim(sds), col = sds@adjacency, pch = 16, cex = 0.25)
+lines(sds, lwd = 2, type = 'lineages', col = 'black')
+dev.off()
+```
+
+##### Differential Gene Expression based on the Trajectory
+
+```{r}
+library(rsample)
+library(tidymodels)
+
+Tcells <- FindVariableFeatures(Tcells)
+
+# Get top 498 highly variable genes
+top_hvg <- HVFInfo(Tcells) %>% 
+  mutate(., bc = rownames(.)) %>% 
+  arrange(desc(variance)) %>% 
+  top_n(497, variance) %>% 
+  pull(bc)
+# Prepare data for random forest
+dat_use <- t(as.matrix(GetAssayData(Tcells, slot = "data"))[top_hvg,])
+dat_use_df <- cbind(slingPseudotime(sds)[,2], dat_use) # Do curve 2, so 2nd columnn
+colnames(dat_use_df)[1] <- "pseudotime"
+dat_use_df <- as.data.frame(dat_use_df[!is.na(dat_use_df[,1]),])
+
+
+dat_split <- initial_split(dat_use_df)
+dat_train <- training(dat_split)
+dat_val <- testing(dat_split)
+
+colnames(dat_train) <- stringr::str_replace(colnames(dat_train), "-", ".") #Replace dash with dots in gene names
+colnames(dat_val) <- stringr::str_replace(colnames(dat_val), "-", ".")
+
+#Performing random forest
+model <- rand_forest(mtry = 200, trees = 1400, min_n = 15, mode = "regression") %>%
+  set_engine("ranger", importance = "impurity", num.threads = 3) %>%
+  fit(pseudotime ~ ., data = dat_train) 
+
+#Getting top 200 genes by pseudotime
+var_imp <- sort(model$fit$variable.importance, decreasing = TRUE)
+top_genes <- names(var_imp)[1:200]
+top_genes <- gsub("\\.", "-", top_genes)
+
+output <- data.frame(model$fit$variable.importance)
+colnames(output) <- "Var.Imp"
+write.table(output, file = "DataAnalysis/subCluster/Tcells/slingshot/VarImp_model.txt", col.names=NA, sep="\t",append=F)
+```
+
+Graphing the variable importance
+```{r}
+output <- read.delim("./DataAnalysis/subCluster/Tcells/slingshot/VarImp_model.txt")
+genelist <- c("Cd8a", "Cd8b1", "Cd4", "Cd3d", "Foxp3", "Il2ra", "Il7r", "Ccr7", "Ccl4", "Gata3", "Tbx21",  "Cd44", "Cd28", "Sell", "Fas", "Ctla4", "Pdcd1", "Icos", "Havcr2", "Entpd1", "Tigit", "Cd244", "Eomes", "Cd160", "Il10", "Smad3", "Klrg1", "Itga4", "Ifna1", "Ifng", "Cxcr3", "Ccr5", "Il12rb2", "Il18ra", "Il27a", "Stat1", "Stat4", "Ccr3", "Ccr4", "Ccr6", "Ccr10", "Ccr8", "Stat5", "Stat6", "Il4", "Il5", "Il6", "Il9", "Il10", "Il13", "Il17a", "Il17f", "Il21", "Il22", "Tgfbr2", "Ccl20", "Ccl22", "Rorgt", "Rora", "Rorc", "Stat3", "Tnfsf8", "Tnfrsf4", "Tnfrsf8","Ccl5", "Cxcr5", "Cxcr6", "Maf", "Bcl6", "Gzmb", "Prf1", "Ms4a4b", "Nfat", "Blimp1", "Batf","Il23r", "Top2a", "Birc5", "Cxcl13", "Nkg7", "Gapdh", "Nfkbia", "Igfbp4", "Cxcl2", "Cxcl14", "Ifngr1", "Cd28", "Cd3e", "Cd3g", "Cd52", "Lag3", "Junb", "Fox", "Ifi27l2a", "Ifitm3", "Gzma")
+genelist <- unique(genelist)
+
+subset_out <- subset(output, X %in% genelist)
+
+ggplot(subset_out, aes(x=reorder(X, Var.Imp), y=Var.Imp)) +
+    geom_bar(stat = "identity") + 
+    theme_classic() + 
+    coord_flip() + 
+    theme(axis.title.y = element_blank())
+ggsave("./DataAnalysis/subCluster/Tcells/slingshot/Filtered_varImp_raw.pdf")
+
+subset_out$Var.Imp <- subset_out$Var.Imp/max(output$Var.Imp)
+
+ggplot(subset_out, aes(x=reorder(X, Var.Imp), y=Var.Imp)) +
+    geom_bar(stat = "identity") + 
+    theme_classic() + 
+    coord_flip() + 
+    theme(axis.title.y = element_blank())
+ggsave("./DataAnalysis/subCluster/Tcells/slingshot/Filtered_varImp_scaled.pdf")
+```
+
+Graphing the top 200 genes by pseudotime
+```{r}
+pal <- rev(colorblind_vector(100))
+
+for (i in seq_along(top_genes)) {
+  colors <- pal[cut(dat_use[,top_genes[i]], breaks = 100)]
+  pdf(paste0("./DataAnalysis/subCluster/Tcells/slingshot/Trajectory_", top_genes[i], ".pdf"), height=4, width=4)
+  plot(reducedDim(sds), col = colors, 
+       pch = 16, cex = 0.5, main = top_genes[i])
+  lines(sds, lwd = 2, col = 'black', type = 'lineages')
+  dev.off()
+}
+```
+
+####SCENIC 
+
+```{r}
+load("SCENIC_output.rda")
+Tcells <- AddMetaData(Tcells, AUC)
+SceneGenes <- colnames(Tcells[[]])
+SceneGenes <- SceneGenes[grep("Atf4|Ets1|Bclaf1|Maz|Nfkb1|Hes1|Irf1|Ifzf1|Irf8|Runx3|Stat1|Elf1|Crem|Irf7", SceneGenes)]
+
+dir.create("./DataAnalysis/subCluster/Tcells/SCENIC")
+for (i in seq_along(SceneGenes)){
+  plot <- VlnPlot(Tcells, SceneGenes[i], pt.size = 0) + NoLegend()
+  ggsave(path = "./DataAnalysis/subCluster/Tcells/SCENIC", file = paste0("TcellsSCENIC_vlnplot_", SceneGenes[i], ".pdf"), height = 2.5, width = 4)
+  
+  plot <- VlnPlot(cells, SceneGenes[i], pt.size = 0) + NoLegend() + facet_grid(cells$Type ~.)
+  ggsave(path = "./DataAnalysis/subCluster/Tcells/SCENIC", file = paste0("TcellsSCENIC_vlnplot_", SceneGenes[i], "_facet.pdf"), height = 5, width = 4)
+}
+```
+
+Again there is an issue in file size, so the integrated object below will not be in the github repository, but rather available from the google drive [link](https://drive.google.com/file/d/1itpkL9tGZy62Fqt69WjctNwoTNTt2Dgj/view?usp=sharing).
+
+```{r eval = FALSE}
+saveRDS(Tcells, file = "./DataAnalysis/subCluster/Tcells/Tcells_integrated.rds")
+```
+
+****
+
+## Fibroblast
+
+Just as above, we will use essientially the same code to process the fibroblasts. Major differences here is I have changed the code slightly to me more universal for more subclustering analysis. 
+
+###Processing and Re-integrating
+
+```{r eval=FALSE}
+options(future.globals.maxSize= 2621440000)
+cells <- integrated[[]]
+cells <- subset(cells, Major == "Fibroblast")
+cells <- row.names(cells)
+subset <- subset(integrated, cells = cells)
+subset <- DietSeurat(subset, assays = "RNA")
+list <- SplitObject(object = subset, split.by = "orig.ident")
+
+for (i in 1:length(list)) {
+    list[[i]] <- SCTransform(list[[i]], verbose = FALSE)
+}
+rm(subset)
+
+features <- SelectIntegrationFeatures(object.list = list, nfeatures = 3000)
+list <- PrepSCTIntegration(object.list = list, anchor.features = features,
+verbose = FALSE)
+anchors <- FindIntegrationAnchors(object.list = list, normalization.method = "SCT",
+anchor.features = features, verbose = FALSE)
+cells <- IntegrateData(anchorset = anchors, normalization.method = "SCT", verbose = FALSE)
+rm(list)
+rm(anchors)
+```
+
+###Reclustering 
+
+
+Unlike T cells, fibroblast clustering seems more difficult. I will employ the same strategy as above with the integrated object.
+
+```{r eval = F}
+dir.create("DataExplore")
+dir.create("DataExplore/Fibroblast")
+for (i in c(10,15,20,25,30,35,40)) {
+    
+    integrated2 <- ScaleData(object = cells, verbose = FALSE)
+    integrated2 <- RunPCA(object = integrated2, npcs = 40, verbose = FALSE)
+    integrated2 <- RunUMAP(object = integrated2, reduction = "pca", 
+        dims = 1:i) #dimensions for  UMAP
+    for (x in c(10,15,20,25,30,35,40)) { #Dimensions for neighbors
+       integrated2 <- FindNeighbors(object = integrated2, dims = 1:x)
+       for(y in c(0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1)) { #Resolution
+           integrated2 <- FindClusters(object = integrated2, resolution = y, force.recalc=T)
+           plot1 <- DimPlot(integrated2, reduction = "umap", pt.size = 0.5, group.by = "orig.ident")
+           ggsave(path = "./DataExplore/Fibroblast", file = paste("Myo_clusters_UMAP", i, "_Neighbors", x, "_resolution", y, "_OrigIdent.eps", sep=""), plot1, width=4.25, height=3)
+           plot2 <- DimPlot(object = integrated2, reduction = 'umap', label = T) + NoLegend()
+            ggsave(path = "./DataExplore/Fibroblast/", file = paste("Myo_clusters_UMAP", i, "_Neighbors", x, "_resolution", y, "_clusters.eps", sep=""), plot2, width=3.5, height=3)
+       }
+    }
+}
+rm(integrated2)
+```
+
+Based on the review of the exported graphs from above, the following parameters will be used.
+* UMAP 30
+* Neighbors:20
+* res 0.6
+
+```{r eval = FALSE}
+cells <- ScaleData(object = cells, verbose = FALSE)
+cells <- RunPCA(object = cells, npcs = 40, verbose = FALSE)
+cells <- RunUMAP(object = cells, reduction = "pca", 
+    dims = 1:30)
+cells <- FindNeighbors(object = cells, dims = 1:20, force.recalc = T)
+cells <- FindClusters(object = cells, resolution = 0.6, force.recalc=T)
+
+dir.create("DataAnalysis/subCluster/Fibroblasts")
+```
+
+###Loading Fibroblasts
+```{r}
+cells <- readRDS("./DataAnalysis/subCluster/Fibroblasts/Fibroblasts_integrated.rds")
+```
+
+```{r}
+update_geom_defaults("point", list(stroke=0.1))
+DimPlot(object = cells, reduction = 'umap', label = T) + NoLegend()
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts", filename="Fibroblasts_UMAP_res6.eps", width=3.5, height=3)
+
+DimPlot(object = cells, reduction = 'umap', group.by = "orig.ident") 
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts", filename="Fibroblasts_orig.ident_UMAP_res6.eps", width=3.75, height=3)
+
+DimPlot(object = cells, reduction = 'umap', group.by = "Type", split.by = "Type") + scale_color_manual(values = rev(colorblind_vector(2))) 
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts", filename="Fibroblasts_Type_UMAP_res6.eps", width=7.25, height=3)
+```
+
+### Fibroblast Markers Graphing
+
+```{r}
+suppressPackageStartupMessages(library(schex))
+cells <- make_hexbin(cells, 80, dimension_reduction = "UMAP")
+
+genelist <- unlist(read.delim("./data/markers.genes/fibroblasts.txt", col.names = F))
+
+dir.create("DataAnalysis/subCluster/Fibroblasts/markers")
+dir.create("DataAnalysis/subCluster/Fibroblasts/markers/selected")
+
+DefaultAssay(cells) <- "RNA"
+
+for (i in seq_along(genelist)) {
+        if (length(which(rownames(cells@assays$RNA@counts) == genelist[i])) == 0){
+            next() #Need to loop here because plot_hexbin_feature() does not have a built-in function to deal with absence of selected gene
+        } else {
+        plot <- plot_hexbin_feature(cells, feature = genelist[i], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/subCluster/Fibroblasts/markers/selected", file = paste0( genelist[i], "_prop.pdf"), plot, height=3, width=3.25)
+        }
+    }
+
+```
+
+
+
+```{r eval = F}
+All.markers <- FindAllMarkers(cells, assay = "RNA", pseudocount.use = 0.1, only.pos = T) 
+write.table(All.markers, file = "DataAnalysis/subCluster/Fibroblasts/markers/FindAllMarkers_output.txt", col.names=NA, sep="\t",append=F)
+```
+
+```{r}
+All.markers <- read.delim("./DataAnalysis/subCluster/Fibroblasts/markers/FindAllMarkers_output.txt")
+top20 <- All.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+top20 <- top20$gene #just want the IDs
+
+dir.create("DataAnalysis/subCluster/Fibroblasts/markers/TopClusterMarkers")
+for (i in seq_along(top20)) {
+    plot <- plot_hexbin_feature(cells, feature = top20[i], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/subCluster/Fibroblasts/markers/TopClusterMarkers", file = paste0("Top20markers", "_", top20[i], "_prop.pdf"), plot, height=3, width=3.25)
+}
+```
+
+
+```{r}
+plot_hexbin_feature(cells, feature = "Wif1", type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+ ggsave(path = "DataAnalysis/subCluster/Fibroblasts/markers/selected", file = "Wif1_prop.pdf",  height=3, width=3.25)
+```
+
+```{r}
+C8 <- subset(cells, idents = "8")
+```
+
+```{r}
+C8_rna <- as.data.frame(as.matrix(C8@assays$RNA@counts))
+C8_rna <- as.data.frame(t(C8_rna[apply(C8_rna [,-1], 1, function(x) !all(x==0)),]))
+
+cor.test(C8_rna$Wif1, C8_rna$Fxyd6)
+correlationsC8 <- cor(C8_rna, method = "spearman")
+wf1cors <- as.data.frame(correlationsC8[,"Wif1"])
+```
+
+```{r}
+FeatureScatter(C8, feature1 = "Wif1", feature2 = "Cyb5a") + 
+    geom_smooth(method = "lm", se=F, color = "black", lty=2) + 
+    guides(color = F) + 
+    theme(plot.title = element_blank())
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts/", file = "C8_Wif1vCyb5a.pdf", height=2.5, width = 2.5)
+
+FeatureScatter(C8, feature1 = "Wif1", feature2 = "Mmp2") + 
+    geom_smooth(method = "lm", se=F, color = "black", lty=2) + 
+    guides(color = F) + 
+    theme(plot.title = element_blank())
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts/", file = "C8_Wif1vMmp2.pdf", height=2.5, width = 2.5)
+
+FeatureScatter(C8, feature1 = "Wif1", feature2 = "Vim") + 
+    geom_smooth(method = "lm", se=F, color = "black", lty=2) + 
+    guides(color = F) + 
+    theme(plot.title = element_blank())
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts/", file = "C8_Wif1vVim.pdf", height=2.5, width = 2.5)
+
+FeatureScatter(C8, feature1 = "Wif1", feature2 = "Dkk3") + 
+    geom_smooth(method = "lm", se=F, color = "black", lty=2) + 
+    guides(color = F) + 
+    theme(plot.title = element_blank())
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts/", file = "C8_Wif1vDkk3.pdf", height=2.5, width = 2.5)
+
+FeatureScatter(C8, feature1 = "Wif1", feature2 = "Fxyd6") + 
+    geom_smooth(method = "lm", se=F, color = "black", lty=2) + 
+    guides(color = F) + 
+    theme(plot.title = element_blank())
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts/", file = "C8_Wif1vFxyd6.pdf", height=2.5, width = 2.5)
+```
+
+Graphing the heatmap/dotplot with the top 8 markers. 
+
+```{r}
+top8 <- All.markers %>% group_by(cluster) %>% top_n(n = 8, wt = avg_logFC)
+DotPlot(cells, features = unique(top8$gene)) +
+    scale_color_gradientn(colors = rev(colorblind_vector(11))) + 
+    guides(color = F, size = F) +
+    scale_size(range = c(0.5,3.5))+
+    theme(axis.text.x = element_text(angle = 90, hjust=1)) 
+
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts/markers/", file = "Top8_dotplot.eps", height = 4, width=12)
+```
+
+### Proportion Evalatuaion
+
+```{r}
+freq_table <- table(cells@active.ident, cells$Type)
+
+mTotal <- 13251
+cTotal <- 9734
+totals <- c(cTotal,mTotal)
+
+for (i in 1:2) { 
+    freq_table[,i] <- freq_table[,i]/totals[i]
+}
+
+freq_table <- reshape2::melt(freq_table)
+
+ggplot(freq_table, aes(x=as.factor(Var1), y=value, fill=Var2)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    xlab("Clusters") + 
+    coord_flip() 
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts/", file = "relativeContribution_byClusterType_scaled.pdf", height=5, width=5)
+
+
+ggplot(freq_table, aes(x=as.factor(Var1), y=value, fill=Var2)) + 
+  geom_bar(stat="identity", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    xlab("Clusters") + 
+    coord_flip()
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts/", file = "totalContribution_byClusterType_scaled.pdf", height=5, width=5)
+
+table <- table(cells@active.ident, cells$Type)
+
+Con <- 9734 #Sum of Healthy Cells
+MyoC <- 13251 #Sum of Sick Cells
+
+out <- NULL
+mat <- NULL
+for (i in 1:nrow(table)) {
+x <- c(Con, MyoC, table[i,1], table[i,2])
+dim(x) <- c(2,2)
+
+test <- prop.test(x[,2], n=x[,1], p = NULL, correct = FALSE)
+
+out <- c(test$p.value, test$estimate[1], test$estimate[2], test$conf.int[1], test$conf.int[2])
+mat <- rbind(mat, out)
+}
+mat <- as.data.frame(mat)
+
+
+colnames(mat) <- c("Pvalue", "Prop_Con", "Prop_MyoC", "OR_low", "OR_high")
+mat$FDR <- p.adjust(mat$Pvalue) #Need to correct for multiple comparisons
+mat$clusters <- rownames(table)
+write.table(mat, file = "./DataAnalysis/subCluster/Fibroblasts/ProportionTest_clusters.txt", col.names=NA, sep="\t",append=F)
+```
+
+### Cell Cycle Scoring
+
+```{r}
+cells <- CellCycleScoring(cells, s.features = s.genes, g2m.features = g2m.genes, set.ident = FALSE)
+
+dir.create("./DataAnalysis/subCluster/Fibroblasts/CellCycle")
+cells@meta.data$cellCluster <- cells@active.ident
+freq_table <- cells[[]]
+freq_table <- subset(freq_table, cellCluster != 11)
+freq_table <- freq_table[,c("Type", "cellCluster", "Phase")]
+freq_table <- subset(freq_table, Phase != "Undecided") #removing undecided phases
+freq_table <- freq_table %>%
+    group_by(Type, cellCluster, Phase) %>%
+    summarise(n = n())
+
+freq_table$Phase <- factor(freq_table$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+ggplot(freq_table, aes(x=cellCluster, y=n, fill=Phase)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank())+ 
+    facet_grid(Type ~.) + 
+   scale_fill_manual(values=colorblind_vector(3)) + 
+  theme_classic()
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts/CellCycle", file = "CellCycle_byCluster.pdf", height=4, width=6)
+
+ggplot(freq_table, aes(x=Type, y=n, fill=Phase)) + 
+  stat_summary(fun = "mean", geom = "bar", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank())+ 
+   scale_fill_manual(values=colorblind_vector(3)) + 
+  theme_classic()
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts/CellCycle", file = "CellCycle.pdf", height=4, width=3)
+
+cells <- subset(cells, Phase != "Undecided")
+cells$Phase <- factor(cells$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+DimPlot(object = cells, reduction = 'umap', group.by = "Phase", split.by = "Type") +
+    scale_color_manual(values=colorblind_vector(3)) 
+
+
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts/CellCycle", filename="CellCycle_UMAP_res6.pdf", width=7.25, height=3)
+```
+
+
+```{r}
+freq_table <- cells[[]]
+freq_table <- subset(freq_table, cellCluster != 11)
+table <- table(freq_table$Type, freq_table$Phase)
+
+chisq.test(table) 
+```
+
+****
+
+Evaluating the signatures of whole-heart signatures in murine myocarditis
+
+```{r}
+GSE53607 <- read.delim("./data/GSE53607_genes.txt")
+names <- colnames(GSE53607)
+set.list <- list()
+for (i in 1:length(names)) {
+  out <- GSE53607[,i]
+  out <- as.character(out)
+  out <- out[out != ""] 
+  out <- unique(out)
+  out <- tolower(out)
+  out <- paste(toupper(substring(out, 1,1)), substring(out, 2), sep="")
+  set.list[[i]] <- GSEABase::GeneSet(out, setName=paste(names[i]))
+}
+```
+
+Calculating the single-sample GSEA, attaching to meta data
+```{r}
+library(escape)
+enrich <- enrichIt(cells, gene.sets = set.list)
+meta <- data.frame(cells[[]], cells@active.ident)
+colnames(meta)[ncol(meta)] <- "cellCluster"
+merged <- merge(meta, enrich, by = "row.names")
+merged <- merged[,c("cellCluster", "Type", "Up_4", "Up_7", "Up_60")]
+
+```
+
+```{r}
+hm_df <- merged %>%
+    group_by(Type, cellCluster) %>%
+    summarise_each(funs(median))
+melt_hm <- reshape2::melt(hm_df)
+melt_hm$column <- paste0(melt_hm$variable, "_", melt_hm$Type)
+
+melt_hm$column <- factor(melt_hm$column, levels = c("Up_4_Con", "Up_7_Con", "Up_60_Con", "Up_4_MyoC", "Up_7_MyoC", "Up_60_MyoC"))
+
+ggplot(melt_hm, aes(x=variable, y = cellCluster)) + 
+    geom_tile(aes(fill = value)) + 
+    theme_classic() +
+    scale_fill_gradientn(colors = rev(colorblind_vector(11)))
+ggsave(path = "./DataAnalysis/subCluster/Fibroblasts/", file = "GSE53607_heatmap.pdf", height=5, width=4)
+
+ggplot(melt_hm, aes(x=column, y = cellCluster)) + 
+    geom_tile(aes(fill = value)) + 
+    theme_classic() +
+    scale_fill_gradientn(colors = rev(colorblind_vector(11)))
+ggsave(path = "./DataAnalysis/subCluster/Fibroblasts/", file = "GSE53607_heatmap_splitby_Type.pdf", height=5, width=4)
+```
+
+```{r}
+line <- median(merged$Up_4)
+splitEnrichment(merged, gene.set = "Up_4", x.axis = "cellCluster", split = "Type") +
+    geom_hline(yintercept = line, lty = 2)
+ggsave(path = "./DataAnalysis/subCluster/Fibroblasts", file = "GSE53607_Split_Up4.pdf", height=2.5, width=3.5)
+
+line <- median(merged$Up_7)
+splitEnrichment(merged, gene.set = "Up_7", x.axis = "cellCluster", split = "Type")+
+    geom_hline(yintercept = line, lty = 2)
+ggsave(path = "./DataAnalysis/subCluster/Fibroblasts", file = "GSE53607_Split_Up7.pdf", height=2.5, width=3.5)
+```
+
+
+Pathway analysis 
+```{r}
+library(escape)
+load("data/ssGSEA_results_MM_H_C2.rda")
+gs <- colnames(ES) #grab the gene set names 
+ES<- cells[[]]
+ES$S.Score <- as.character(ES$S.Score)
+ES$G2M.Score <- as.character(ES$G2M.Score)
+ES <- ES[,-c(2:5)]
+
+dir.create("DataAnalysis/subCluster/Fibroblasts/GSEA")
+
+output_cluster <- getSignificance(ES, group = "cellCluster", fit = "ANOVA")
+write.table(output_cluster, file = "DataAnalysis/subCluster/Fibroblasts/GSEA/ANOVA_byCluster.txt", col.names=NA, sep="\t",append=F)
+output_Type <- getSignificance(ES, group = "Type", fit = "T.test")
+write.table(output_Type, file = "DataAnalysis/subCluster/Fibroblasts/GSEA/Ttest_byType.txt", col.names=NA, sep="\t",append=F)
+```
+
+
+### Differential Gene Expression by Cluster
+
+```{r}
+dir.create("./DataAnalysis/subCluster/Fibroblasts/DGE")
+clusters <- as.character(unique(cells@active.ident))
+DefaultAssay(cells) <- "RNA"
+
+mat <- NULL
+for (i in seq_along(clusters)) {
+    tmp <- subset(cells, idents = clusters[i])
+    tmp <- NormalizeData(tmp, assay = "RNA") #after subset always normalize RNA
+    tmp <- SetIdent(tmp, value = tmp@meta.data$Type)
+    markers <- FindMarkers(object = tmp, 
+                only.pos = F, ident.1 = "MyoC", ident.2="Con", min.diff.pct = -Inf, 
+                logfc.threshold = -Inf, min.pct = -Inf)
+    markers$names <- rownames(markers)
+    markers  <- markers  %>%
+        mutate(Difference = pct.1 - pct.2)
+    
+    mat <- data.frame(markers)
+    write.table(mat, file=paste("./DataAnalysis/subCluster/Fibroblasts/DGE/Fibroblasts_differentialMarkers_MyoCvCon_", clusters[i], ".txt", sep=""),
+                sep="\t",append=F, row.names = FALSE)
+    mat=NULL
+}
+```
+
+
+```{r}
+file_list <- list.files("./DataAnalysis/subCluster/Fibroblasts/DGE/")
+file_list <- file_list[grepl("differentialMarkers", file_list)]
+files <- file.path(paste0("./DataAnalysis/subCluster/Fibroblasts/DGE/", file_list))
+
+marker_list <- list()
+for (i in 1:length(files)) {
+    marker_list[[i]] <- read.delim(files[i])
+}
+names(marker_list) <- paste0("C", 0:12)#assign the cell type to each element of the list
+
+library(ggrepel)
+dir.create("DataAnalysis/subCluster/Fibroblasts/DGE/visualizations")
+
+for (i in seq_along(marker_list)) {
+tmp <- marker_list[[i]]
+tmp <- tmp %>%
+    mutate(Trend = ifelse(p_val_adj <= 0.05 & avg_logFC > 0, "Up",
+                    ifelse(p_val_adj <= 0.05 & avg_logFC < 0, "Down", "None")))
+filter <- subset(tmp, p_val_adj <= 0.05 & avg_logFC > 0)
+top10 <- filter %>% top_n(n =10, wt = avg_logFC + 4*Difference)
+bottom10 <- filter_down %>% top_n(n =10, wt = -(avg_logFC + 4*Difference))
+
+
+ggplot(tmp, aes(x=Difference, y=avg_logFC)) + 
+  geom_point(size=0.5, color="#999999") + 
+    geom_point(data=subset(tmp, Trend == "Up" | Trend == "Down"), aes(color = Trend), size=0.75) + 
+  theme_classic() + 
+    geom_hline(yintercept = 0, lty = 2) + 
+    geom_vline(xintercept = 0, lty = 2)  + 
+    geom_text_repel(data=subset(tmp, names %in% top10$names), aes(label=names), segment.size = 0.25, size=2.5) + 
+    scale_color_manual(values = rev(colorblind_vector(2)))+
+     guides(color=F)
+ggsave(path = "./DataAnalysis/subCluster/Fibroblasts/DGE/visualizations", file = paste0("pctDifference_vs_foldchange_", names(marker_list[i]), "_Up.pdf"), height = 2.5, width=2.5)
+
+ggplot(tmp, aes(x=Difference, y=avg_logFC)) + 
+  geom_point(size=0.5, color="#999999") + 
+  theme_classic() + 
+    geom_hline(yintercept = 0, lty = 2) + 
+    geom_vline(xintercept = 0, lty = 2)  + 
+    geom_text_repel(data=subset(tmp, names %in% bottom10$names), aes(label=names), segment.size = 0.25, size=2.5)
+ggsave(path = "./DataAnalysis/subCluster/Fibroblasts/DGE/visualizations", file = paste0("pctDifference_vs_foldchange_", names(marker_list[i]), "_Down.pdf"), height = 2.5, width=2.5)
+
+tmp <- tmp %>%
+    mutate(p_val_adj = ifelse(p_val_adj == 0, min(p_val_adj), p_val_adj)) #mutate the p-values that are lower than detection
+
+ggplot(tmp, aes(x=avg_logFC, y=-log10(p_val_adj))) + 
+    geom_point(size=0.5, color="#999999") + 
+    theme_classic() + 
+    scale_y_sqrt() +
+    geom_vline(xintercept = 0, lty = 2) + 
+    geom_hline(yintercept = 1.3, lty = 2) + 
+    geom_text_repel(data=tmp[tmp$names %in% c(as.character(top10$names), as.character(bottom10$names)),], aes(label=names), segment.size = 0.25, size=2)
+ggsave(path = "./DataAnalysis/subCluster/Fibroblasts/DGE/visualizations", file = paste0("VolcanoPlot_", names(marker_list[i]), ".pdf"), height = 2.5, width=2.5)
+}
+```
+
+I also want to see the common genes upregulated and downregulated between the 4 Fibroblast clusters.
+
+```{r}
+subset_list <- marker_list[c(2,6,7,9)]
+diff.genes <- list()
+for (i in seq_along(subset_list)) {
+tmp <- subset_list[[i]]
+tmp <- tmp %>%
+    subset(p_val_adj < 0.05)
+upregulated <- subset(tmp, avg_logFC > 0)
+downregulated <- subset(tmp, avg_logFC < 0)
+diff.genes [[i]] <- list("up" = upregulated$names, "down" = downregulated$names)
+}
+
+duplicated_up <- as.data.frame(table(c(diff.genes[[1]]$up, diff.genes[[2]]$up, diff.genes[[3]]$up, diff.genes[[4]]$up)))
+duplicated_up <- subset(duplicated_up, Freq == 4)
+duplicated_up <- subset (duplicated_up, !grepl("Rpl|Rps", duplicated_up$Var1))
+
+
+duplicated_down <- as.data.frame(table(c(diff.genes[[1]]$down, diff.genes[[2]]$down, diff.genes[[3]]$down, diff.genes[[4]]$down)))
+duplicated_down <- subset(duplicated_down, Freq == 4)
+duplicated_down <- subset (duplicated_down, !grepl("Rpl|Rps", duplicated_down$Var1))
+
+```
+
+
+```{r}
+COI <- subset(cells, ident = c(1,5,6,8))
+
+VlnPlot(COI, features = duplicated_up$Var1, pt.size = 0, group.by = "Type", ncol = 5)
+ggsave(path = "./DataAnalysis/subCluster/Fibroblasts/DGE/visualizations", file = "Violinplot_Upregulated.pdf", height=5, width = 8)
+
+
+VlnPlot(COI, features = duplicated_down$Var1, pt.size = 0, group.by = "Type", ncol = 5)
+ggsave(path = "./DataAnalysis/subCluster/Fibroblasts/DGE/visualizations", file = "Violinplot_downregulated.pdf", height=25, width = 8)
+
+gl <- c("Ank2", "Brd9", "Col1a1", "Col5a3", "Fbn1", "Fkbp14", "Ntn4", "Ppp1r14a", "S100a11", "Vegfa")
+VlnPlot(COI, features = gl, pt.size = 0, group.by = "Type", ncol = 5)
+ggsave(path = "./DataAnalysis/subCluster/Fibroblasts/DGE/visualizations", file = "Violinplot_downFinal.pdf", height=5, width = 8)
+```
+
+
+### Constructing Trajectory
+
+```{r}
+dir.create("DataAnalysis/subCluster/Fibroblasts/monocle3")
+library(monocle3)
+expr_matrix <- cells@assays$RNA@counts
+metadata <- cells[[]]
+genes <- data.frame(gene_short_name = rownames(cells[["RNA"]]),
+                             row.names = rownames(cells[["RNA"]]))
+
+cds <- new_cell_data_set(expr_matrix,
+                         cell_metadata = metadata,
+                         gene_metadata = genes)
+
+cds <- preprocess_cds(cds, num_dim = 50)
+cds <- align_cds(cds, alignment_group = "orig.ident", residual_model_formula_str = "~ Type")
+
+cds <- reduce_dimension(cds)
+cds <- cluster_cells(cds)
+cds <- learn_graph(cds)
+
+plot_cells(cds, label_groups_by_cluster=FALSE,  color_cells_by = "Type") + 
+                scale_color_manual(values = rev(colorblind_vector(2))) 
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts/monocle3", filename="Fibroblastss_UMAP_monocle_byType.eps", width=3.5, height=3)
+plot_cells(cds, label_groups_by_cluster=FALSE,  color_cells_by = "cellCluster")
+ggsave(path = "DataAnalysis/subCluster/Fibroblasts/monocle3", filename="Fibroblasts_UMAP_monocle_byCluster.eps", width=3.5, height=3)
+```
+
+####SCENIC 
+
+```{r}
+load("SCENIC_output.rda")
+cells <- AddMetaData(cells, AUC)
+SceneGenes <- colnames(cells[[]])
+SceneGenes <- SceneGenes[grep("Egr1|Creb3l2|Zeb|Creb5|Creb3l1", SceneGenes)]
+
+dir.create("./DataAnalysis/subCluster/Fibroblasts/SCENIC")
+for (i in seq_along(SceneGenes)){
+  plot <- VlnPlot(cells, SceneGenes[i], pt.size = 0) + NoLegend()
+  ggsave(path = "./DataAnalysis/subCluster/Fibroblasts/SCENIC", file = paste0("FibroblastsSCENIC_vlnplot_", SceneGenes[i], ".pdf"), height = 2.5, width = 4)
+  
+  plot <- VlnPlot(cells, SceneGenes[i], pt.size = 0) + NoLegend() + facet_grid(cells$Type ~.)
+  ggsave(path = "./DataAnalysis/subCluster/Fibroblasts/SCENIC", file = paste0("FibroblastsSCENIC_vlnplot_", SceneGenes[i], "_facet.pdf"), height = 5, width = 4)
+}
+```
+
+```{r}
+saveRDS(cells, file = "./DataAnalysis/subCluster/Fibroblasts/Fibroblasts_integrated.rds")
+```
+
+## Myeloid Cells
+
+Just as above, we will use essientially the same code to process the myeloid cells. 
+
+### Processing and Re-integrating
+
+```{r eval = FALSE}
+cells <- integrated[[]]
+cells <- subset(cells, Major == "Myeloid Cells")
+cells <- row.names(cells)
+subset <- subset(integrated, cells = cells)
+subset <- DietSeurat(subset, assays = "RNA")
+list <- SplitObject(object = subset, split.by = "orig.ident")
+
+for (i in 1:length(list)) {
+    list[[i]] <- SCTransform(list[[i]], verbose = FALSE)
+}
+rm(subset)
+
+features <- SelectIntegrationFeatures(object.list = list, nfeatures = 3000)
+list <- PrepSCTIntegration(object.list = list, anchor.features = features,
+verbose = FALSE)
+anchors <- FindIntegrationAnchors(object.list = list, normalization.method = "SCT",
+anchor.features = features, verbose = FALSE)
+cells <- IntegrateData(anchorset = anchors, normalization.method = "SCT", verbose = FALSE)
+rm(list)
+rm(anchors)
+```
+
+### Reclustering Myeloid Cells
+```{r eval = FALSE}
+cells <- ScaleData(object = cells, verbose = FALSE)
+cells <- RunPCA(object = cells, npcs = 40, verbose = FALSE)
+cells <- RunUMAP(object = cells, reduction = "pca", 
+    dims = 1:30)
+cells <- FindNeighbors(object = cells, dims = 1:40, force.recalc = T)
+cells <- FindClusters(object = cells, resolution = 0.6, force.recalc=T)
+
+dir.create("DataAnalysis/subCluster/Myeloid")
+```
+
+```{r}
+cells <- readRDS("DataAnalysis/subCluster/Myeloid/Myeloid_integrated.rds")
+```
+
+```{r}
+update_geom_defaults("point", list(stroke=0.1))
+DimPlot(object = cells, reduction = 'umap', label = T) + NoLegend()
+ggsave(path = "DataAnalysis/subCluster/Myeloid", filename="Myeloid_UMAP_res6.eps", width=3.5, height=3)
+
+DimPlot(object = cells, reduction = 'umap', group.by = "orig.ident") 
+ggsave(path = "DataAnalysis/subCluster/Myeloid", filename="Myeloid_orig.ident_UMAP_res6.eps", width=3.75, height=3)
+
+DimPlot(object = cells, reduction = 'umap', group.by = "Type", split.by = "Type") + scale_color_manual(values = rev(colorblind_vector(2))) 
+ggsave(path = "DataAnalysis/subCluster/Myeloid", filename="Myeloid_Type_UMAP_res6.eps", width=7.25, height=3)
+
+update_geom_defaults("point", list(stroke=0.1))
+DimPlot(object = cells, reduction = 'umap', label = T, group.by = "Cell_Assign") + NoLegend()
+ggsave(path = "DataAnalysis/subCluster/Myeloid", filename="Myeloid_UMAP_Cell_Assign.eps", width=3.5, height=3)
+
+update_geom_defaults("point", list(stroke=0.1))
+DimPlot(object = cells, reduction = 'umap', label = T, group.by = "final.clusters") + NoLegend()
+ggsave(path = "DataAnalysis/subCluster/Myeloid", filename="Myeloid_UMAP_final.clusters.eps", width=3.5, height=3)
+```
+
+### Myeloid Markers Graphing 
+
+```{r}
+suppressPackageStartupMessages(library(schex))
+cells <- make_hexbin(cells, 30, dimension_reduction = "UMAP")
+
+dc <- as.character(unlist(read.delim("./data/markers.genes/dc_genes.txt", col.names = F)))
+macro <- as.character(unlist(read.delim("./data/markers.genes/macrophages.txt", col.names = F)))
+
+genelist <- c(dc, macro, "Fcnb", "Spp1", "Fabp4")
+
+dir.create("DataAnalysis/subCluster/Myeloid/markers")
+dir.create("DataAnalysis/subCluster/Myeloid/markers/selected")
+
+DefaultAssay(cells) <- "RNA"
+
+for (i in seq_along(genelist)) {
+        if (length(which(rownames(cells@assays$RNA@counts) == genelist[i])) == 0){
+            next() #Need to loop here because plot_hexbin_feature() does not have a built-in function to deal with absence of selected gene
+        } else {
+        plot <- plot_hexbin_feature(cells, feature = genelist[i], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/subCluster/Myeloid/markers/selected", file = paste0( genelist[i], "_prop.pdf"), plot, height=3, width=3.25)
+        }
+    }
+```
+
+```{r eval = FALSE}
+All.markers <- FindAllMarkers(cells, assay = "RNA", pseudocount.use = 0.1, only.pos = T) 
+write.table(All.markers, file = "DataAnalysis/subCluster/Myeloid/markers/FindAllMarkers_output.txt", col.names=NA, sep="\t",append=F)
+```
+
+
+
+
+```{r}
+All.markers <- read.delim("./DataAnalysis/subCluster/Myeloid/markers/FindAllMarkers_output.txt")
+top60 <- All.markers %>% group_by(cluster) %>% top_n(n = 60, wt = avg_logFC)
+top60 <- top60$gene #just want the IDs
+
+dir.create("DataAnalysis/subCluster/Myeloid/markers/TopClusterMarkers")
+for (i in seq_along(top60)) {
+    plot <- plot_hexbin_feature(cells, feature = top60[i], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/subCluster/Myeloid/markers/TopClusterMarkers", file = paste0("Top20markers", "_", top60[i], "_prop.pdf"), plot, height=3, width=3.25)
+}
+```
+
+
+
+
+```{r}
+top5 <- All.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_logFC)
+DotPlot(cells, features = unique(top5$gene)) +
+    scale_color_gradientn(colors = rev(colorblind_vector(11))) + 
+    guides(color = F, size = F) +
+    scale_size(range = c(0.5,3.5))+
+    theme(axis.text.x = element_text(angle = 90, hjust=1)) 
+
+ggsave(path = "DataAnalysis/subCluster/Myeloid/markers/", file = "Top5_dotplot.eps", height = 3, width=6)
+```
+
+```{r}
+expr_matrix <- as.matrix(cells@assays$RNA@counts[,names(cells@active.ident)])
+gene_annotation <- data.frame(row.names=rownames(expr_matrix), gene_short_name=rownames(expr_matrix))
+```
+
+*Warning:* This is not the greatest call function, sometimes when I delete the defaults the function stops working, so some of these seem random, but they're there for sanity
+
+```{r include=FALSE}
+singler = CreateSinglerObject(expr_matrix, project.name = "Myo", annot = NULL, min.genes = 200,
+  technology = "10X", species = "Mouse", ref.list = list(), normalize.gene.length = F, variable.genes = "de",
+  fine.tune = T, do.signatures = F, do.main.types = T, 
+  reduce.file.size = T, numCores =4)
+  
+singler$seurat = cells
+```
+
+```{r}
+x <- singler$singler[[1]]$SingleR.single$scores
+names <- colnames(x)
+names <- names[grep("Macrophage|DC|Monocytes", names)]
+x <- as.data.frame(x[,colnames(x) %in% names])
+cells <- AddMetaData(cells, x)
+```
+
+```{r}
+names <- colnames(cells[[]])[394:430]
+
+for (i in seq_along(names)) {
+plot <- FeaturePlot(cells, features =  names[i]) + 
+    scale_color_gradientn(colors = rev(colorblind_vector(11))) + guides(color = F)
+    
+    ggsave(path = "DataAnalysis/subCluster/Myeloid/markers/", file = paste0( names[i], "_enrichment.pdf"), plot, height=3, width=3.25)
+}
+```
+
+
+### Proportion Evaluation
+
+```{r}
+freq_table <- table(cells@active.ident, cells$Type)
+
+mTotal <- 13251
+cTotal <- 9734
+totals <- c(cTotal,mTotal)
+
+for (i in 1:2) { 
+    freq_table[,i] <- freq_table[,i]/totals[i]
+}
+
+freq_table <- reshape2::melt(freq_table)
+
+ggplot(freq_table, aes(x=as.factor(Var1), y=value, fill=Var2)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    xlab("Clusters") + 
+    coord_flip() 
+ggsave(path = "DataAnalysis/subCluster/Myeloid/", file = "relativeContribution_byClusterType_scaled.pdf", height=5, width=5)
+
+
+ggplot(freq_table, aes(x=as.factor(Var1), y=value, fill=Var2)) + 
+  geom_bar(stat="identity", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    xlab("Clusters") + 
+    coord_flip()
+ggsave(path = "DataAnalysis/subCluster/Myeloid/", file = "totalContribution_byClusterType_scaled.pdf", height=5, width=5)
+
+table <- table(cells@active.ident, cells$Type)
+
+Con <- 9734 #Sum of Healthy Cells
+MyoC <- 13251 #Sum of Sick Cells
+
+out <- NULL
+mat <- NULL
+for (i in 1:nrow(table)) {
+x <- c(Con, MyoC, table[i,1], table[i,2])
+dim(x) <- c(2,2)
+
+test <- prop.test(x[,2], n=x[,1], p = NULL, correct = FALSE)
+
+out <- c(test$p.value, test$estimate[1], test$estimate[2], test$conf.int[1], test$conf.int[2])
+mat <- rbind(mat, out)
+}
+mat <- as.data.frame(mat)
+
+
+colnames(mat) <- c("Pvalue", "Prop_Con", "Prop_MyoC", "OR_low", "OR_high")
+mat$FDR <- p.adjust(mat$Pvalue) #Need to correct for multiple comparisons
+mat$clusters <- rownames(table)
+write.table(mat, file = "./DataAnalysis/subCluster/Myeloid/ProportionTest_clusters.txt", col.names=NA, sep="\t",append=F)
+```
+
+### Cell Cycle Scoring
+
+```{r}
+cells <- CellCycleScoring(cells, s.features = s.genes, g2m.features = g2m.genes, set.ident = FALSE)
+
+dir.create("./DataAnalysis/subCluster/Myeloid/CellCycle")
+cells@meta.data$cellCluster <- cells@active.ident
+freq_table <- cells[[]]
+freq_table <- freq_table[,c("Type", "cellCluster", "Phase")]
+freq_table <- subset(freq_table, Phase != "Undecided") #removing undecided phases
+freq_table <- freq_table %>%
+    group_by(Type, cellCluster, Phase) %>%
+    summarise(n = n())
+
+freq_table$Phase <- factor(freq_table$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+ggplot(freq_table, aes(x=cellCluster, y=n, fill=Phase)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank())+ 
+    facet_grid(Type ~.) + 
+   scale_fill_manual(values=colorblind_vector(3)) + 
+  theme_classic()
+ggsave(path = "DataAnalysis/subCluster/Myeloid/CellCycle", file = "CellCycle_byCluster.pdf", height=4, width=6)
+
+cells <- subset(cells, Phase != "Undecided")
+cells$Phase <- factor(cells$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+DimPlot(object = cells, reduction = 'umap', group.by = "Phase", split.by = "Type") +
+    scale_color_manual(values=colorblind_vector(3)) 
+
+
+ggsave(path = "DataAnalysis/subCluster/Myeloid/CellCycle", filename="CellCycle_UMAP_res6.pdf", width=7.25, height=3)
+```
+
+
+
+```{r}
+GSE53607 <- read.delim("./data/GSE53607_genes.txt")
+names <- colnames(GSE53607)
+set.list <- list()
+for (i in 1:length(names)) {
+  out <- GSE53607[,i]
+  out <- as.character(out)
+  out <- out[out != ""] 
+  out <- unique(out)
+  out <- tolower(out)
+  out <- paste(toupper(substring(out, 1,1)), substring(out, 2), sep="")
+  set.list[[i]] <- GSEABase::GeneSet(out, setName=paste(names[i]))
+}
+```
+
+Calculating the single-sample GSEA, attaching to meta data
+```{r}
+library(escape)
+enrich <- enrichIt(cells, gene.sets = set.list)
+meta <- cells[[]]
+merged <- merge(meta, enrich, by = "row.names")
+merged <- merged[,c("cellCluster", "Type", "Up_4", "Up_7", "Up_60")]
+
+```
+
+
+
+```{r}
+dir.create("./DataAnalysis/subCluster/Myeloid/GSEA")
+hm_df <- merged %>%
+    group_by(Type, cellCluster) %>%
+    summarise_each(funs(median))
+melt_hm <- reshape2::melt(hm_df)
+melt_hm$column <- paste0(melt_hm$variable, "_", melt_hm$Type)
+
+melt_hm$column <- factor(melt_hm$column, levels = c("Up_4_Con", "Up_7_Con", "Up_60_Con", "Up_4_MyoC", "Up_7_MyoC", "Up_60_MyoC"))
+
+ggplot(melt_hm, aes(x=variable, y = cellCluster)) + 
+    geom_tile(aes(fill = value)) + 
+    theme_classic() +
+    scale_fill_gradientn(colors = rev(colorblind_vector(11)))
+ggsave(path = "./DataAnalysis/subCluster/Myeloid/GSEA", file = "GSE53607_heatmap.pdf", height=5, width=4)
+
+ggplot(melt_hm, aes(x=column, y = cellCluster)) + 
+    geom_tile(aes(fill = value)) + 
+    theme_classic() +
+    scale_fill_gradientn(colors = rev(colorblind_vector(11)))
+ggsave(path = "./DataAnalysis/subCluster/Myeloid/GSEA", file = "GSE53607_heatmap_splitby_Type.pdf", height=5, width=4)
+```
+
+```{r}
+line <- median(merged$Up_4)
+splitEnrichment(merged, gene.set = "Up_4", x.axis = "cellCluster", split = "Type") +
+    geom_hline(yintercept = line, lty = 2)
+ggsave(path = "./DataAnalysis/subCluster/myeloid/GSEA", file = "GSE53607_Split_Up4.pdf", height=2.5, width=3.5)
+
+line <- median(merged$Up_7)
+splitEnrichment(merged, gene.set = "Up_7", x.axis = "cellCluster", split = "Type")+
+    geom_hline(yintercept = line, lty = 2)
+ggsave(path = "./DataAnalysis/subCluster/Myeloid/GSEA", file = "GSE53607_Split_Up7.pdf", height=2.5, width=3.5)
+```
+
+
+### Differential Gene Expression by Cluster
+
+```{r}
+dir.create("./DataAnalysis/subCluster/Myeloid/DGE")
+clusters <- as.character(unique(cells@active.ident))
+DefaultAssay(cells) <- "RNA"
+
+mat <- NULL
+for (i in seq_along(clusters)) {
+    tmp <- subset(cells, idents = clusters[i])
+    tmp <- NormalizeData(tmp, assay = "RNA") #after subset always normalize RNA
+    tmp <- SetIdent(tmp, value = tmp@meta.data$Type)
+    markers <- FindMarkers(object = tmp, 
+                only.pos = F, ident.1 = "MyoC", ident.2="Con", min.diff.pct = -Inf, 
+                logfc.threshold = -Inf, min.pct = -Inf)
+    markers$names <- rownames(markers)
+    markers  <- markers  %>%
+        mutate(Difference = pct.1 - pct.2)
+    
+    mat <- data.frame(markers)
+    write.table(mat, file=paste("./DataAnalysis/subCluster/Myeloid/DGE/Myeloid_differentialMarkers_MyoCvCon_", clusters[i], ".txt", sep=""),
+                sep="\t",append=F, row.names = FALSE)
+    mat=NULL
+}
+```
+
+```{r}
+
+file_list <- list.files("./DataAnalysis/subCluster/Myeloid/DGE/")
+file_list <- file_list[grepl("differentialMarkers", file_list)]
+files <- file.path(paste0("./DataAnalysis/subCluster/Myeloid/DGE/", file_list))
+
+marker_list <- list()
+for (i in 1:length(files)) {
+    marker_list[[i]] <- read.delim(files[i])
+}
+names(marker_list) <- paste0("C", 0:5)#assign the cell type to each element of the list
+
+library(ggrepel)
+dir.create("DataAnalysis/subCluster/Myeloid/DGE/visualizations")
+
+for (i in seq_along(marker_list)) {
+tmp <- marker_list[[i]]
+tmp <- tmp %>%
+    mutate(Trend = ifelse(p_val_adj <= 0.05 & avg_logFC > 0, "Up",
+                    ifelse(p_val_adj <= 0.05 & avg_logFC < 0, "Down", "None")))
+filter <- subset(tmp, p_val_adj <= 0.05)
+top10 <- filter %>% top_n(n =10, wt = avg_logFC + 4*Difference)
+bottom10 <- filter %>% top_n(n =10, wt = -(avg_logFC + 4*Difference))
+
+
+ggplot(tmp, aes(x=Difference, y=avg_logFC)) + 
+  geom_point(size=0.5, color="#999999") + 
+    geom_point(data=subset(tmp, Trend == "Up" | Trend == "Down"), aes(color = Trend), size=0.75) + 
+  theme_classic() + 
+    geom_hline(yintercept = 0, lty = 2) + 
+    geom_vline(xintercept = 0, lty = 2)  + 
+    geom_text_repel(data=subset(tmp, names %in% c(top10$names, bottom10$names)), aes(label=names), segment.size = 0.25, size=2.5) + 
+    scale_color_manual(values = rev(colorblind_vector(2)))+
+     guides(color=F)
+ggsave(path = "./DataAnalysis/subCluster/Myeloid/DGE/visualizations", file = paste0("pctDifference_vs_foldchange_", names(marker_list[i]), "_Up.pdf"), height = 2.5, width=2.5)
+
+ggplot(tmp, aes(x=Difference, y=avg_logFC)) + 
+  geom_point(size=0.5, color="#999999") + 
+  theme_classic() + 
+    geom_hline(yintercept = 0, lty = 2) + 
+    geom_vline(xintercept = 0, lty = 2)  + 
+    geom_text_repel(data=subset(tmp, names %in% bottom10$names), aes(label=names), segment.size = 0.25, size=2.5)
+ggsave(path = "./DataAnalysis/subCluster/Myeloid/DGE/visualizations", file = paste0("pctDifference_vs_foldchange_", names(marker_list[i]), "_Down.pdf"), height = 2.5, width=2.5)
+
+tmp <- tmp %>%
+    mutate(p_val_adj = ifelse(p_val_adj == 0, min(p_val_adj), p_val_adj)) #mutate the p-values that are lower than detection
+
+ggplot(tmp, aes(x=avg_logFC, y=-log10(p_val_adj))) + 
+    geom_point(size=0.5, color="#999999") + 
+    theme_classic() + 
+    scale_y_sqrt() +
+    geom_vline(xintercept = 0, lty = 2) + 
+    geom_hline(yintercept = 1.3, lty = 2) + 
+    geom_text_repel(data=tmp[tmp$names %in% c(as.character(top10$names), as.character(bottom10$names)),], aes(label=names), segment.size = 0.25, size=2)
+ggsave(path = "./DataAnalysis/subCluster/Myeloid/DGE/visualizations", file = paste0("VolcanoPlot_", names(marker_list[i]), ".pdf"), height = 2.5, width=2.5)
+}
+```
+
+
+
+
+### Constructing Trajectory
+
+```{r}
+dir.create("DataAnalysis/subCluster/Myeloid/monocle3")
+library(monocle3)
+expr_matrix <- cells@assays$RNA@counts
+metadata <- cells[[]]
+genes <- data.frame(gene_short_name = rownames(cells[["RNA"]]),
+                             row.names = rownames(cells[["RNA"]]))
+
+cds <- new_cell_data_set(expr_matrix,
+                         cell_metadata = metadata,
+                         gene_metadata = genes)
+
+cds <- preprocess_cds(cds, num_dim = 50)
+
+cds <- align_cds(cds, alignment_group = "orig.ident", residual_model_formula_str = "~ Type")
+cds <- reduce_dimension(cds)
+cds <- cluster_cells(cds)
+cds <- learn_graph(cds)
+
+plot_cells(cds, label_groups_by_cluster=FALSE,  color_cells_by = "Type") + 
+                scale_color_manual(values = rev(colorblind_vector(2))) 
+ggsave(path = "DataAnalysis/subCluster/Myeloid/monocle3", filename="Myeloids_UMAP_monocle_byType.eps", width=3.5, height=3)
+plot_cells(cds, label_groups_by_cluster=FALSE,  color_cells_by = "cellCluster")
+ggsave(path = "DataAnalysis/subCluster/Myeloid/monocle3", filename="Myeloid_UMAP_monocle_byCluster.eps", width=3.5, height=3)
+```
+
+```{r}
+saveRDS(cells, file = "./DataAnalysis/subCluster/Myeloid/Myeloid_integrated.rds")
+```
+
+
+```{r}
+library(slingshot)
+dir.create("./DataAnalysis/subCluster/Myeloid/slingshot")
+
+sce <- as.SingleCellExperiment(cells) 
+
+sds <- slingshot(Embeddings(cells, "umap"), clusterLabels = cells@active.ident, allow.breaks = TRUE, stretch = 0, reducedDim = "UMAP") #Calcualting the trajectory
+```
+
+```{r}
+library(scales)
+#Making plots more siminmar to ggplot outputs of Seurat
+cell_pal <- function(cell_vars, pal_fun,...) {
+  if (is.numeric(cell_vars)) {
+    pal <- pal_fun(100, ...)
+    return(pal[cut(cell_vars, breaks = 100)])
+  } else {
+    categories <- sort(unique(cell_vars))
+    pal <- setNames(pal_fun(length(categories), ...), categories)
+    return(pal[cell_vars])
+  }
+}
+#We need color palettes Leiden clusters. These would be the same colors seen in the Seurat plots.
+
+cell_colors_clust <- cell_pal(cells@active.ident, hue_pal())
+
+pdf("./DataAnalysis/subCluster/Myeloid/slingshot/Trajectory.pdf", height=4, width=4)
+plot(reducedDim(sds), col = cell_colors_clust, pch = 16, cex = 0.25)
+lines(sds, lwd = 2, type = 'lineages', col = 'black')
+dev.off()
+
+plot(reducedDim(sds), col = cell_colors_clust, pch = 16, cex = 0.5)
+lines(sds, lwd = 2, col = 'black')
+
+plot(reducedDim(sds), col = sds@adjacency, pch = 16, cex = 0.25)
+lines(sds, lwd = 2, type = 'lineages', col = 'black')
+dev.off()
+```
+
+##### Differential Gene Expression based on the Trajectory
+
+```{r}
+library(rsample)
+library(tidymodels)
+
+cells <- FindVariableFeatures(cells)
+
+# Get top 498 highly variable genes
+top_hvg <- HVFInfo(cells) %>% 
+  mutate(., bc = rownames(.)) %>% 
+  arrange(desc(variance)) %>% 
+  top_n(497, variance) %>% 
+  pull(bc)
+# Prepare data for random forest
+dat_use <- t(as.matrix(GetAssayData(cells, slot = "data"))[top_hvg,])
+dat_use_df <- cbind(slingPseudotime(sds)[,2], dat_use) # Do curve 2, so 2nd columnn
+colnames(dat_use_df)[1] <- "pseudotime"
+dat_use_df <- as.data.frame(dat_use_df[!is.na(dat_use_df[,1]),])
+
+
+dat_split <- initial_split(dat_use_df)
+dat_train <- training(dat_split)
+dat_val <- testing(dat_split)
+
+colnames(dat_train) <- stringr::str_replace(colnames(dat_train), "-", ".") #Replace dash with dots in gene names
+colnames(dat_val) <- stringr::str_replace(colnames(dat_val), "-", ".")
+
+#Performing random forest
+model <- rand_forest(mtry = 200, trees = 1400, min_n = 15, mode = "regression") %>%
+  set_engine("ranger", importance = "impurity", num.threads = 3) %>%
+  fit(pseudotime ~ ., data = dat_train) 
+
+#Getting top 200 genes by pseudotime
+var_imp <- sort(model$fit$variable.importance, decreasing = TRUE)
+top_genes <- names(var_imp)[1:200]
+top_genes <- gsub("\\.", "-", top_genes)
+
+output <- data.frame(model$fit$variable.importance)
+colnames(output) <- "Var.Imp"
+write.table(output, file = "DataAnalysis/subCluster/Myeloid/slingshot/VarImp_model.txt", col.names=NA, sep="\t",append=F)
+```
+
+####SCENIC 
+
+```{r}
+load("SCENIC_output.rda")
+cells <- AddMetaData(cells, AUC)
+SceneGenes <- colnames(cells[[]])
+SceneGenes <- SceneGenes[grep("Atf4|Irf5|Mef2c|Relb|Irf1|Maff|Mafb|Rara|Runx1|Irf8|Atf3|Bhlhe40|Tfdp1", SceneGenes)]
+
+dir.create("./DataAnalysis/subCluster/Myeloid/SCENIC")
+for (i in seq_along(SceneGenes)){
+  plot <- VlnPlot(cells, SceneGenes[i], pt.size = 0) + NoLegend()
+  ggsave(path = "./DataAnalysis/subCluster/Myeloid/SCENIC", file = paste0("MyeloidSCENIC_vlnplot_", SceneGenes[i], ".pdf"), height = 2.5, width = 4)
+  
+  plot <- VlnPlot(cells, SceneGenes[i], pt.size = 0) + NoLegend() + facet_grid(cells$Type ~.)
+  ggsave(path = "./DataAnalysis/subCluster/Myeloid/SCENIC", file = paste0("MyeloidSCENIC_vlnplot_", SceneGenes[i], "_facet.pdf"), height = 5, width = 4)
+}
+```
+
+
+***
+
+## Neutrophils
+
+### Processing and Re-integrating
+
+```{r eval=FALSE}
+cells <- integrated[[]]
+cells <- subset(cells, Major == "Neutrophils")
+cells <- row.names(cells)
+subset <- subset(integrated, cells = cells)
+subset <- DietSeurat(subset, assays = "RNA")
+list <- SplitObject(object = subset, split.by = "orig.ident")
+
+for (i in 1:length(list)) {
+    list[[i]] <- SCTransform(list[[i]], verbose = FALSE)
+}
+rm(subset)
+
+features <- SelectIntegrationFeatures(object.list = list, nfeatures = 3000)
+list <- PrepSCTIntegration(object.list = list, anchor.features = features,
+verbose = FALSE)
+anchors <- FindIntegrationAnchors(object.list = list, normalization.method = "SCT",
+anchor.features = features, verbose = FALSE)
+cells <- IntegrateData(anchorset = anchors, normalization.method = "SCT", verbose = FALSE)
+rm(list)
+rm(anchors)
+```
+
+
+```{r eval = F}
+dir.create("DataExplore")
+dir.create("DataExplore/Neutrophils")
+for (i in c(10,15,20,25,30,35,40)) {
+    
+    integrated2 <- ScaleData(object = cells, verbose = FALSE)
+    integrated2 <- FindVariableFeatures(integrated2)
+    integrated2 <- RunPCA(object = integrated2, npcs = 40, verbose = FALSE)
+    integrated2 <- RunUMAP(object = integrated2, reduction = "pca", 
+        dims = 1:i) #dimensions for  UMAP
+    for (x in c(10,15,20,25,30,35,40)) { #Dimensions for neighbors
+       integrated2 <- FindNeighbors(object = integrated2, dims = 1:x)
+       for(y in c(0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1)) { #Resolution
+           integrated2 <- FindClusters(object = integrated2, resolution = y, force.recalc=T)
+           plot1 <- DimPlot(integrated2, reduction = "umap", pt.size = 0.5, group.by = "orig.ident")
+           ggsave(path = "./DataExplore/Neutrophils", file = paste("Myo_clusters_UMAP", i, "_Neighbors", x, "_resolution", y, "_OrigIdent.pdf", sep=""), plot1, width=4.25, height=3)
+           plot2 <- DimPlot(object = integrated2, reduction = 'umap', label = T) + NoLegend()
+            ggsave(path = "./DataExplore/Neutrophils", file = paste("Myo_clusters_UMAP", i, "_Neighbors", x, "_resolution", y, "_clusters.pdf", sep=""), plot2, width=3.5, height=3)
+       }
+    }
+}
+rm(integrated2)
+```
+
+
+### Reclustering Neutrophils
+
+```{r eval = FALSE}
+cells <- ScaleData(object = cells, verbose = FALSE)
+cells <- RunPCA(object = cells, npcs = 40, verbose = FALSE)
+cells <- RunUMAP(object = cells, reduction = "pca", 
+    dims = 1:40)
+cells <- FindNeighbors(object = cells, dims = 1:30, force.recalc = T)
+cells <- FindClusters(object = cells, resolution = 0.6, force.recalc=T)
+
+dir.create("DataAnalysis/subCluster/Neutrophils")
+```
+
+```{r}
+cells <- readRDS("DataAnalysis/subCluster/Neutrophils/Neutrophils_integrated.rds")
+```
+
+```{r}
+update_geom_defaults("point", list(stroke=0.1))
+DimPlot(object = cells, reduction = 'umap', label = T) + NoLegend()
+ggsave(path = "DataAnalysis/subCluster/Neutrophils", filename="Neutrophils_UMAP_res6.eps", width=3.5, height=3)
+
+DimPlot(object = cells, reduction = 'umap', group.by = "orig.ident") 
+ggsave(path = "DataAnalysis/subCluster/Neutrophils", filename="Neutrophils_orig.ident_UMAP_res6.eps", width=3.75, height=3)
+
+DimPlot(object = cells, reduction = 'umap', group.by = "Type", split.by = "Type") + scale_color_manual(values = rev(colorblind_vector(2))) 
+ggsave(path = "DataAnalysis/subCluster/Neutrophils", filename="Neutrophils_Type_UMAP_res6.eps", width=7.25, height=3)
+```
+
+### Neutrophil Markers Graphing
+
+```{r}
+suppressPackageStartupMessages(library(schex))
+cells <- make_hexbin(cells, 80, dimension_reduction = "UMAP")
+
+genelist <- unlist(read.delim("./data/markers.genes/granulocytes.txt", col.names = F))
+
+dir.create("DataAnalysis/subCluster/Neutrophils/markers")
+dir.create("DataAnalysis/subCluster/Neutrophils/markers/selected")
+
+DefaultAssay(cells) <- "RNA"
+
+for (i in seq_along(genelist)) {
+        if (length(which(rownames(cells@assays$RNA@counts) == genelist[i])) == 0){
+            next() #Need to loop here because plot_hexbin_feature() does not have a built-in function to deal with absence of selected gene
+        } else {
+        plot <- plot_hexbin_feature(cells, feature = genelist[i], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/subCluster/Neutrophils/markers/selected", file = paste0( genelist[i], "_prop.pdf"), plot, height=3, width=3.25)
+        }
+    }
+
+```
+
+```{r eval=FALSE}
+All.markers <- FindAllMarkers(cells, assay = "RNA", pseudocount.use = 0.1, only.pos = T) 
+write.table(All.markers, file = "DataAnalysis/subCluster/Neutrophils/markers/FindAllMarkers_output.txt", col.names=NA, sep="\t",append=F)
+```
+
+```{r}
+All.markers <- read.delim("./DataAnalysis/subCluster/Neutrophils/markers/FindAllMarkers_output.txt")
+top20 <- All.markers %>% group_by(cluster) %>% top_n(n = 60, wt = avg_logFC)
+top20 <- top20$gene #just want the IDs
+
+dir.create("DataAnalysis/subCluster/Neutrophils/markers/TopClusterMarkers")
+for (i in seq_along(top20)) {
+    plot <- plot_hexbin_feature(cells, feature = top20[i], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/subCluster/Neutrophils/markers/TopClusterMarkers", file = paste0("Top20markers", "_", top20[i], "_prop.pdf"), plot, height=3, width=3.25)
+}
+```
+
+
+```{r}
+top8 <- All.markers %>% group_by(cluster) %>% top_n(n = 8, wt = avg_logFC)
+DotPlot(cells, features = unique(top8$gene)) + coord_flip() + 
+    scale_color_gradientn(colors = rev(colorblind_vector(11))) + 
+    guides(color = F, size = F) +
+    scale_size(range = c(0.5,3.5))
+ggsave(path = "DataAnalysis/subCluster/Neutrophils/markers/", file = "Top8_dotplot.eps", height=8, width=3)
+```
+
+
+```{r}
+Neut <- read.delim("~/Documents/GitHub/Lasrado_Myocarditis/DataAnalysis/DGE/cellType_differentialMarkers_MyoCvCon_Neutrophils.txt") 
+     Neut <- Neut %>%
+        mutate(Trend = ifelse(p_val_adj <= 0.05 & avg_logFC > 0, "Up",
+                    ifelse(p_val_adj <= 0.05 & avg_logFC < 0, "Down", "None")))
+    filter <- subset(Neut, p_val_adj <= 0.05)
+    top15 <- filter %>% top_n(n =10, wt = avg_logFC)
+    bottom15 <- filter %>% top_n(n =10, wt = -avg_logFC)
+    names <- c(as.character(bottom15$names), as.character(top15$names))
+ 
+    ggplot(data = Neut[Neut$names %in% names,], aes(x=reorder(names, avg_logFC), y = avg_logFC)) + 
+        geom_bar(stat = "identity", aes(fill = Trend), color="black") + 
+        geom_hline(yintercept = 0) + 
+        coord_flip() + 
+        theme_classic() + 
+        theme(axis.title = element_blank()) + 
+        scale_fill_manual(values = rev(colorblind_vector(2))) +
+        guides(fill = F)
+    ggsave(path = "./DataAnalysis/subCluster/Neutrophils/DGE", file =  "Neutrophils_OverallTopMarkers.pdf", height = 5, width=3)
+
+
+```
+
+### Proportion Evaluation
+
+```{r}
+freq_table <- table(cells@active.ident, cells$Type)
+
+mTotal <- 13251
+cTotal <- 9734
+totals <- c(cTotal,mTotal)
+
+for (i in 1:2) { 
+    freq_table[,i] <- freq_table[,i]/totals[i]
+}
+
+freq_table <- reshape2::melt(freq_table)
+
+ggplot(freq_table, aes(x=as.factor(Var1), y=value, fill=Var2)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    xlab("Clusters") + 
+    coord_flip() 
+ggsave(path = "DataAnalysis/subCluster/Neutrophils/", file = "relativeContribution_byClusterType_scaled.pdf", height=5, width=5)
+
+
+ggplot(freq_table, aes(x=as.factor(Var1), y=value, fill=Var2)) + 
+  geom_bar(stat="identity", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    xlab("Clusters") + 
+    coord_flip()
+ggsave(path = "DataAnalysis/subCluster/Neutrophils/", file = "totalContribution_byClusterType_scaled.pdf", height=5, width=5)
+
+table <- table(cells@active.ident, cells$Type)
+
+Con <- 9734 #Sum of Healthy Cells
+MyoC <- 13251 #Sum of Sick Cells
+
+out <- NULL
+mat <- NULL
+for (i in 1:nrow(table)) {
+x <- c(Con, MyoC, table[i,1], table[i,2])
+dim(x) <- c(2,2)
+
+test <- prop.test(x[,2], n=x[,1], p = NULL, correct = FALSE)
+
+out <- c(test$p.value, test$estimate[1], test$estimate[2], test$conf.int[1], test$conf.int[2])
+mat <- rbind(mat, out)
+}
+mat <- as.data.frame(mat)
+
+
+colnames(mat) <- c("Pvalue", "Prop_Con", "Prop_MyoC", "OR_low", "OR_high")
+mat$FDR <- p.adjust(mat$Pvalue) #Need to correct for multiple comparisons
+mat$clusters <- rownames(table)
+write.table(mat, file = "./DataAnalysis/subCluster/Neutrophils/ProportionTest_clusters.txt", col.names=NA, sep="\t",append=F)
+```
+
+### Cell Cycle Scoring
+
+```{r}
+cells <- CellCycleScoring(cells, s.features = s.genes, g2m.features = g2m.genes, set.ident = FALSE)
+
+dir.create("./DataAnalysis/subCluster/Neutrophils/CellCycle")
+cells@meta.data$cellCluster <- cells@active.ident
+freq_table <- cells[[]]
+freq_table <- freq_table[,c("Type", "cellCluster", "Phase")]
+freq_table <- subset(freq_table, Phase != "Undecided") #removing undecided phases
+freq_table <- freq_table %>%
+    group_by(Type, cellCluster, Phase) %>%
+    summarise(n = n())
+
+freq_table$Phase <- factor(freq_table$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+ggplot(freq_table, aes(x=cellCluster, y=n, fill=Phase)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank())+ 
+    facet_grid(Type ~.) + 
+   scale_fill_manual(values=colorblind_vector(3)) + 
+  theme_classic()
+ggsave(path = "DataAnalysis/subCluster/Neutrophils/CellCycle", file = "CellCycle_byCluster.pdf", height=4, width=6)
+
+ggplot(freq_table, aes(x=Type, y=n, fill=Phase)) + 
+  stat_summary(geom = "bar", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank())+ 
+   scale_fill_manual(values=colorblind_vector(3)) + 
+  theme_classic()
+
+cells <- subset(cells, Phase != "Undecided")
+cells$Phase <- factor(cells$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+DimPlot(object = cells, reduction = 'umap', group.by = "Phase", split.by = "Type") +
+    scale_color_manual(values=colorblind_vector(3)) 
+
+
+ggsave(path = "DataAnalysis/subCluster/Neutrophils/CellCycle", filename="CellCycle_UMAP_res6.eps", width=7.25, height=3)
+```
+
+### Differential Gene Expression by Cluster
+
+```{r}
+dir.create("./DataAnalysis/subCluster/Neutrophils/DGE")
+clusters <- as.character(unique(cells@active.ident))
+DefaultAssay(cells) <- "RNA"
+
+mat <- NULL
+for (i in seq_along(clusters)) {
+    tmp <- subset(cells, idents = clusters[i])
+    tmp <- NormalizeData(tmp, assay = "RNA") #after subset always normalize RNA
+    tmp <- SetIdent(tmp, value = tmp@meta.data$Type)
+    markers <- FindMarkers(object = tmp, 
+                only.pos = F, ident.1 = "MyoC", ident.2="Con", min.diff.pct = -Inf, 
+                logfc.threshold = -Inf, min.pct = -Inf)
+    markers$names <- rownames(markers)
+    markers  <- markers  %>%
+        mutate(Difference = pct.1 - pct.2)
+    
+    mat <- data.frame(markers)
+    write.table(mat, file=paste("./DataAnalysis/subCluster/Neutrophils/DGE/Neutrophils_differentialMarkers_MyoCvCon_", clusters[i], ".txt", sep=""),
+                sep="\t",append=F, row.names = FALSE)
+    mat=NULL
+}
+```
+
+
+```{r}
+
+file_list <- list.files("./DataAnalysis/subCluster/Neutrophils/DGE/")
+file_list <- file_list[grepl("differentialMarkers", file_list)]
+files <- file.path(paste0("./DataAnalysis/subCluster/Neutrophils/DGE/", file_list))
+
+marker_list <- list()
+for (i in 1:length(files)) {
+    marker_list[[i]] <- read.delim(files[i])
+}
+names(marker_list) <- paste0("C", 0:5)#assign the cell type to each element of the list
+
+library(ggrepel)
+dir.create("DataAnalysis/subCluster/Neutrophils/DGE/visualizations")
+
+for (i in seq_along(marker_list)) {
+tmp <- marker_list[[i]]
+tmp <- tmp %>%
+    mutate(Trend = ifelse(p_val_adj <= 0.05 & avg_logFC > 0, "Up",
+                    ifelse(p_val_adj <= 0.05 & avg_logFC < 0, "Down", "None")))
+filter <- subset(tmp, p_val_adj <= 0.05)
+top10 <- filter %>% top_n(n =10, wt = avg_logFC + 4*Difference)
+bottom10 <- filter %>% top_n(n =10, wt = -(avg_logFC + 4*Difference))
+
+
+ggplot(tmp, aes(x=Difference, y=avg_logFC)) + 
+  geom_point(size=0.5, color="#999999") + 
+    geom_point(data=subset(tmp, Trend == "Up" | Trend == "Down"), aes(color = Trend), size=0.75) + 
+  theme_classic() + 
+    geom_hline(yintercept = 0, lty = 2) + 
+    geom_vline(xintercept = 0, lty = 2)  + 
+    geom_text_repel(data=subset(tmp, names %in% c(top10$names, bottom10$names)), aes(label=names), segment.size = 0.25, size=2.5) + 
+    scale_color_manual(values = rev(colorblind_vector(2)))+
+     guides(color=F)
+ggsave(path = "./DataAnalysis/subCluster/Neutrophils/DGE/visualizations", file = paste0("pctDifference_vs_foldchange_", names(marker_list[i]), "_Up.pdf"), height = 2.5, width=2.5)
+
+ggplot(tmp, aes(x=Difference, y=avg_logFC)) + 
+  geom_point(size=0.5, color="#999999") + 
+  theme_classic() + 
+    geom_hline(yintercept = 0, lty = 2) + 
+    geom_vline(xintercept = 0, lty = 2)  + 
+    geom_text_repel(data=subset(tmp, names %in% bottom10$names), aes(label=names), segment.size = 0.25, size=2.5)
+ggsave(path = "./DataAnalysis/subCluster/Neutrophils/DGE/visualizations", file = paste0("pctDifference_vs_foldchange_", names(marker_list[i]), "_Down.pdf"), height = 2.5, width=2.5)
+
+tmp <- tmp %>%
+    mutate(p_val_adj = ifelse(p_val_adj == 0, min(p_val_adj), p_val_adj)) #mutate the p-values that are lower than detection
+
+ggplot(tmp, aes(x=avg_logFC, y=-log10(p_val_adj))) + 
+    geom_point(size=0.5, color="#999999") + 
+    theme_classic() + 
+    scale_y_sqrt() +
+    geom_vline(xintercept = 0, lty = 2) + 
+    geom_hline(yintercept = 1.3, lty = 2) + 
+    geom_text_repel(data=tmp[tmp$names %in% c(as.character(top10$names), as.character(bottom10$names)),], aes(label=names), segment.size = 0.25, size=2)
+ggsave(path = "./DataAnalysis/subCluster/Neutrophils/DGE/visualizations", file = paste0("VolcanoPlot_", names(marker_list[i]), ".pdf"), height = 2.5, width=2.5)
+}
+```
+
+### Constructing Trajectory
+
+```{r}
+dir.create("DataAnalysis/subCluster/Neutrophils/monocle3")
+library(monocle3)
+expr_matrix <- cells@assays$RNA@counts
+metadata <- cells[[]]
+genes <- data.frame(gene_short_name = rownames(cells[["RNA"]]),
+                             row.names = rownames(cells[["RNA"]]))
+
+cds <- new_cell_data_set(expr_matrix,
+                         cell_metadata = metadata,
+                         gene_metadata = genes)
+
+cds <- preprocess_cds(cds, num_dim = 50)
+cds <- align_cds(cds, alignment_group = "orig.ident", residual_model_formula_str = "~ Type")
+
+cds <- reduce_dimension(cds)
+cds <- cluster_cells(cds)
+cds <- learn_graph(cds)
+
+plot_cells(cds, label_groups_by_cluster=FALSE,  color_cells_by = "Type") + 
+                scale_color_manual(values = rev(colorblind_vector(2))) 
+ggsave(path = "DataAnalysis/subCluster/Neutrophils/monocle3", filename="Neutrophilss_UMAP_monocle_byType.eps", width=3.5, height=3)
+plot_cells(cds, label_groups_by_cluster=FALSE,  color_cells_by = "cellCluster")
+ggsave(path = "DataAnalysis/subCluster/Neutrophils/monocle3", filename="Neutrophils_UMAP_monocle_byCluster.eps", width=3.5, height=3)
+```
+
+
+```{r}
+dir.create("./DataAnalysis/subCluster/Neutrophils/slingshot")
+
+sce <- as.SingleCellExperiment(cells) 
+
+sds <- slingshot(Embeddings(cells, "umap"), clusterLabels = cells@active.ident, allow.breaks = TRUE, stretch = 0, reducedDim = "UMAP") #Calcualting the trajectory
+```
+
+```{r}
+library(scales)
+#Making plots more siminmar to ggplot outputs of Seurat
+cell_pal <- function(cell_vars, pal_fun,...) {
+  if (is.numeric(cell_vars)) {
+    pal <- pal_fun(100, ...)
+    return(pal[cut(cell_vars, breaks = 100)])
+  } else {
+    categories <- sort(unique(cell_vars))
+    pal <- setNames(pal_fun(length(categories), ...), categories)
+    return(pal[cell_vars])
+  }
+}
+#We need color palettes Leiden clusters. These would be the same colors seen in the Seurat plots.
+
+cell_colors_clust <- cell_pal(cells@active.ident, hue_pal())
+
+pdf("./DataAnalysis/subCluster/Neutrophils/slingshot/Trajectory.pdf", height=4, width=4)
+plot(reducedDim(sds), col = cell_colors_clust, pch = 16, cex = 0.25)
+lines(sds, lwd = 2, type = 'lineages', col = 'black')
+dev.off()
+
+plot(reducedDim(sds), col = cell_colors_clust, pch = 16, cex = 0.5)
+lines(sds, lwd = 2, col = 'black')
+
+plot(reducedDim(sds), col = sds@adjacency, pch = 16, cex = 0.25)
+lines(sds, lwd = 2, type = 'lineages', col = 'black')
+dev.off()
+```
+
+##### Differential Gene Expression based on the Trajectory
+
+```{r}
+library(rsample)
+library(tidymodels)
+
+cells <- FindVariableFeatures(cells)
+
+# Get top 498 highly variable genes
+top_hvg <- HVFInfo(cells) %>% 
+  mutate(., bc = rownames(.)) %>% 
+  arrange(desc(variance)) %>% 
+  top_n(497, variance) %>% 
+  pull(bc)
+# Prepare data for random forest
+dat_use <- t(as.matrix(GetAssayData(cells, slot = "data"))[top_hvg,])
+dat_use_df <- cbind(slingPseudotime(sds)[,2], dat_use) # Do curve 2, so 2nd columnn
+colnames(dat_use_df)[1] <- "pseudotime"
+dat_use_df <- as.data.frame(dat_use_df[!is.na(dat_use_df[,1]),])
+
+
+dat_split <- initial_split(dat_use_df)
+dat_train <- training(dat_split)
+dat_val <- testing(dat_split)
+
+colnames(dat_train) <- stringr::str_replace(colnames(dat_train), "-", ".") #Replace dash with dots in gene names
+colnames(dat_val) <- stringr::str_replace(colnames(dat_val), "-", ".")
+
+#Performing random forest
+model <- rand_forest(mtry = 200, trees = 1400, min_n = 15, mode = "regression") %>%
+  set_engine("ranger", importance = "impurity", num.threads = 3) %>%
+  fit(pseudotime ~ ., data = dat_train) 
+
+#Getting top 200 genes by pseudotime
+var_imp <- sort(model$fit$variable.importance, decreasing = TRUE)
+top_genes <- names(var_imp)[1:200]
+top_genes <- gsub("\\.", "-", top_genes)
+
+output <- data.frame(model$fit$variable.importance)
+colnames(output) <- "Var.Imp"
+write.table(output, file = "DataAnalysis/subCluster/Neutrophils/slingshot/VarImp_model.txt", col.names=NA, sep="\t",append=F)
+```
+
+Graphing the variable importance
+```{r}
+output <- read.delim("./DataAnalysis/subCluster/Tcells/slingshot/VarImp_model.txt")
+genelist <- c("Cd8a", "Cd8b1", "Cd4", "Cd3d", "Foxp3", "Il2ra", "Il7r", "Ccr7", "Ccl4", "Gata3", "Tbx21",  "Cd44", "Cd28", "Sell", "Fas", "Ctla4", "Pdcd1", "Icos", "Havcr2", "Entpd1", "Tigit", "Cd244", "Eomes", "Cd160", "Il10", "Smad3", "Klrg1", "Itga4", "Ifna1", "Ifng", "Cxcr3", "Ccr5", "Il12rb2", "Il18ra", "Il27a", "Stat1", "Stat4", "Ccr3", "Ccr4", "Ccr6", "Ccr10", "Ccr8", "Stat5", "Stat6", "Il4", "Il5", "Il6", "Il9", "Il10", "Il13", "Il17a", "Il17f", "Il21", "Il22", "Tgfbr2", "Ccl20", "Ccl22", "Rorgt", "Rora", "Rorc", "Stat3", "Tnfsf8", "Tnfrsf4", "Tnfrsf8","Ccl5", "Cxcr5", "Cxcr6", "Maf", "Bcl6", "Gzmb", "Prf1", "Ms4a4b", "Nfat", "Blimp1", "Batf","Il23r", "Top2a", "Birc5", "Cxcl13", "Nkg7", "Gapdh", "Nfkbia", "Igfbp4", "Cxcl2", "Cxcl14", "Ifngr1", "Cd28", "Cd3e", "Cd3g", "Cd52", "Lag3", "Junb", "Fox", "Ifi27l2a", "Ifitm3", "Gzma")
+genelist <- unique(genelist)
+
+subset_out <- subset(output, X %in% genelist)
+
+ggplot(subset_out, aes(x=reorder(X, Var.Imp), y=Var.Imp)) +
+    geom_bar(stat = "identity") + 
+    theme_classic() + 
+    coord_flip() + 
+    theme(axis.title.y = element_blank())
+ggsave("./DataAnalysis/subCluster/Tcells/slingshot/Filtered_varImp_raw.pdf")
+
+subset_out$Var.Imp <- subset_out$Var.Imp/max(output$Var.Imp)
+
+ggplot(subset_out, aes(x=reorder(X, Var.Imp), y=Var.Imp)) +
+    geom_bar(stat = "identity") + 
+    theme_classic() + 
+    coord_flip() + 
+    theme(axis.title.y = element_blank())
+ggsave("./DataAnalysis/subCluster/Tcells/slingshot/Filtered_varImp_scaled.pdf")
+```
+```{r}
+saveRDS(cells, file = "./DataAnalysis/subCluster/Neutrophils/Neutrophils_integrated.rds")
+```
+
+#### SCENIC
+```{r}
+load("SCENIC_output.rda")
+cells <- AddMetaData(cells, AUC)
+SceneGenes <- colnames(cells[[]])
+SceneGenes <- SceneGenes[grep("Myc|Irf9|Max|Klf3|Bcl3|Fosl2|Nfil3", SceneGenes)]
+
+dir.create("./DataAnalysis/subCluster/Neutrophils/SCENIC")
+for (i in seq_along(SceneGenes)){
+  plot <- VlnPlot(cells, SceneGenes[i], pt.size = 0) + NoLegend()
+  ggsave(path = "./DataAnalysis/subCluster/Neutrophils/SCENIC", file = paste0("NeutrophilsSCENIC_vlnplot_", SceneGenes[i], ".pdf"), height = 2.5, width = 4)
+  
+  plot <- VlnPlot(cells, SceneGenes[i], pt.size = 0) + NoLegend() + facet_grid(cells$Type ~.)
+  ggsave(path = "./DataAnalysis/subCluster/Neutrophils/SCENIC", file = paste0("NeutrophilsSCENIC_vlnplot_", SceneGenes[i], "_facet.pdf"), height = 5, width = 4)
+}
+```
+
+## B Cells
+
+### Processing and Re-integrating
+
+```{r}
+cells <- integrated[[]]
+cells <- subset(cells, Major == "B Cells")
+cells <- row.names(cells)
+subset <- subset(integrated, cells = cells)
+subset <- DietSeurat(subset, assays = "RNA")
+list <- SplitObject(object = subset, split.by = "orig.ident")
+
+for (i in 1:length(list)) {
+    list[[i]] <- SCTransform(list[[i]], verbose = FALSE)
+}
+rm(subset)
+
+features <- SelectIntegrationFeatures(object.list = list, nfeatures = 3000)
+list <- PrepSCTIntegration(object.list = list, anchor.features = features,
+verbose = FALSE)
+anchors <- FindIntegrationAnchors(object.list = list, normalization.method = "SCT",
+anchor.features = features, verbose = FALSE, k.filter = 50)
+cells <- IntegrateData(anchorset = anchors, normalization.method = "SCT", verbose = FALSE)
+rm(list)
+rm(anchors)
+```
+
+### Reclustering B cells
+
+```{r}
+cells <- ScaleData(object = cells, verbose = FALSE)
+cells <- RunPCA(object = cells, npcs = 40, verbose = FALSE)
+cells <- RunUMAP(object = cells, reduction = "pca", 
+    dims = 1:40)
+cells <- FindNeighbors(object = cells, dims = 1:25, force.recalc = T)
+cells <- FindClusters(object = cells, resolution = 0.4, force.recalc=T)
+
+dir.create("DataAnalysis/subCluster/Bcells")
+```
+
+```{r}
+cells <- readRDS("DataAnalysis/subCluster/Bcells/Bcells_integrated.rds")
+```
+
+```{r}
+update_geom_defaults("point", list(stroke=0.1))
+DimPlot(object = cells, reduction = 'umap', label = T) + NoLegend()
+ggsave(path = "DataAnalysis/subCluster/Bcells", filename="Bcells_UMAP_res6.eps", width=3.5, height=3)
+
+DimPlot(object = cells, reduction = 'umap', group.by = "orig.ident") 
+ggsave(path = "DataAnalysis/subCluster/Bcells", filename="Bcells_orig.ident_UMAP_res6.eps", width=3.75, height=3)
+
+DimPlot(object = cells, reduction = 'umap', group.by = "Type", split.by = "Type") + scale_color_manual(values = rev(colorblind_vector(2))) 
+ggsave(path = "DataAnalysis/subCluster/Bcells", filename="Bcells_Type_UMAP_res6.eps", width=7.25, height=3)
+```
+
+### B Cell Markers Graphing
+
+```{r}
+suppressPackageStartupMessages(library(schex))
+cells <- make_hexbin(cells, 30, dimension_reduction = "UMAP")
+
+genelist <- unlist(read.delim("./data/markers.genes/b_cell_genes.txt", col.names = F))
+
+dir.create("DataAnalysis/subCluster/Bcells/markers")
+dir.create("DataAnalysis/subCluster/Bcells/markers/selected")
+
+DefaultAssay(cells) <- "RNA"
+
+for (i in seq_along(genelist)) {
+        if (length(which(rownames(cells@assays$RNA@counts) == genelist[i])) == 0){
+            next() #Need to loop here because plot_hexbin_feature() does not have a built-in function to deal with absence of selected gene
+        } else {
+        plot <- plot_hexbin_feature(cells, feature = genelist[i], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/subCluster/Bcells/markers/selected", file = paste0( genelist[i], "_prop.pdf"), plot, height=3, width=3.25)
+        }
+    }
+
+```
+
+```{r eval = F}
+All.markers <- FindAllMarkers(cells, assay = "RNA", pseudocount.use = 0.1, only.pos = T) 
+write.table(All.markers, file = "DataAnalysis/subCluster/Bcells/markers/FindAllMarkers_output.txt", col.names=NA, sep="\t",append=F)
+```
+
+```{r}
+All.markers <- read.delim("./DataAnalysis/subCluster/Bcells/markers/FindAllMarkers_output.txt")
+top20 <- All.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+top20 <- top20$gene #just want the IDs
+
+dir.create("DataAnalysis/subCluster/Bcells/markers/TopClusterMarkers")
+for (i in seq_along(top20)) {
+    plot <- plot_hexbin_feature(cells, feature = top20[i], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/subCluster/Bcells/markers/TopClusterMarkers", file = paste0("Top20markers", "_", top20[i], "_prop.pdf"), plot, height=3, width=3.25)
+}
+```
+
+### Proportion Evaluation
+
+```{r}
+freq_table <- table(cells@active.ident, cells$Type)
+
+mTotal <- 13251
+cTotal <- 9734
+totals <- c(cTotal,mTotal)
+
+for (i in 1:2) { 
+    freq_table[,i] <- freq_table[,i]/totals[i]
+}
+
+freq_table <- reshape2::melt(freq_table)
+
+ggplot(freq_table, aes(x=as.factor(Var1), y=value, fill=Var2)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    xlab("Clusters") + 
+    coord_flip() 
+ggsave(path = "DataAnalysis/subCluster/Bcells/", file = "relativeContribution_byClusterType_scaled.pdf", height=5, width=5)
+
+
+ggplot(freq_table, aes(x=as.factor(Var1), y=value, fill=Var2)) + 
+  geom_bar(stat="identity", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    xlab("Clusters") + 
+    coord_flip()
+ggsave(path = "DataAnalysis/subCluster/Bcells/", file = "totalContribution_byClusterType_scaled.pdf", height=5, width=5)
+
+table <- table(cells@active.ident, cells$Type)
+
+Con <- 9734 #Sum of Healthy Cells
+MyoC <- 13251 #Sum of Sick Cells
+
+out <- NULL
+mat <- NULL
+for (i in 1:nrow(table)) {
+x <- c(Con, MyoC, table[i,1], table[i,2])
+dim(x) <- c(2,2)
+
+test <- prop.test(x[,2], n=x[,1], p = NULL, correct = FALSE)
+
+out <- c(test$p.value, test$estimate[1], test$estimate[2], test$conf.int[1], test$conf.int[2])
+mat <- rbind(mat, out)
+}
+mat <- as.data.frame(mat)
+
+
+colnames(mat) <- c("Pvalue", "Prop_Con", "Prop_MyoC", "OR_low", "OR_high")
+mat$FDR <- p.adjust(mat$Pvalue) #Need to correct for multiple comparisons
+mat$clusters <- rownames(table)
+write.table(mat, file = "./DataAnalysis/subCluster/Bcells/ProportionTest_clusters.txt", col.names=NA, sep="\t",append=F)
+```
+
+### Cell Cycle Scoring
+
+```{r}
+cells <- CellCycleScoring(cells, s.features = s.genes, g2m.features = g2m.genes, set.ident = FALSE)
+```
+
+```{r}
+dir.create("./DataAnalysis/subCluster/Bcells/CellCycle")
+cells@meta.data$cellCluster <- cells@active.ident
+freq_table <- cells[[]]
+freq_table <- freq_table[,c("Type", "cellCluster", "Phase")]
+freq_table <- subset(freq_table, Phase != "Undecided") #removing undecided phases
+freq_table <- freq_table %>%
+    group_by(Type, cellCluster, Phase) %>%
+    summarise(n = n())
+
+freq_table$Phase <- factor(freq_table$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+ggplot(freq_table, aes(x=cellCluster, y=n, fill=Phase)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank())+ 
+    facet_grid(Type ~.) + 
+   scale_fill_manual(values=colorblind_vector(3)) + 
+  theme_classic()
+ggsave(path = "DataAnalysis/subCluster/Bcells/CellCycle", file = "CellCycle_byCluster.pdf", height=4, width=6)
+
+cells <- subset(cells, Phase != "Undecided")
+cells$Phase <- factor(cells$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+DimPlot(object = cells, reduction = 'umap', group.by = "Phase", split.by = "Type") +
+    scale_color_manual(values=colorblind_vector(3)) 
+
+
+ggsave(path = "DataAnalysis/subCluster/Bcells/CellCycle", filename="CellCycle_UMAP_res6.pdf", width=7.25, height=3)
+```
+
+### Differential Gene Expression by Cluster
+
+```{r}
+dir.create("./DataAnalysis/subCluster/Bcells/DGE")
+clusters <- as.character(unique(cells@active.ident))
+DefaultAssay(cells) <- "RNA"
+
+mat <- NULL
+for (i in seq_along(clusters)) {
+    tmp <- subset(cells, idents = clusters[i])
+    tmp <- NormalizeData(tmp, assay = "RNA") #after subset always normalize RNA
+    tmp <- SetIdent(tmp, value = tmp@meta.data$Type)
+    markers <- FindMarkers(object = tmp, 
+                only.pos = F, ident.1 = "MyoC", ident.2="Con", min.diff.pct = -Inf, 
+                logfc.threshold = -Inf, min.pct = -Inf)
+    markers$names <- rownames(markers)
+    markers  <- markers  %>%
+        mutate(Difference = pct.1 - pct.2)
+    
+    mat <- data.frame(markers)
+    write.table(mat, file=paste("./DataAnalysis/subCluster/Bcells/DGE/Bcells_differentialMarkers_MyoCvCon_", clusters[i], ".txt", sep=""),
+                sep="\t",append=F, row.names = FALSE)
+    mat=NULL
+}
+```
+
+### Constructing Trajectory
+
+```{r}
+dir.create("DataAnalysis/subCluster/Bcells/monocle3")
+library(monocle3)
+expr_matrix <- cells@assays$RNA@counts
+metadata <- cells[[]]
+genes <- data.frame(gene_short_name = rownames(cells[["RNA"]]),
+                             row.names = rownames(cells[["RNA"]]))
+
+cds <- new_cell_data_set(expr_matrix,
+                         cell_metadata = metadata,
+                         gene_metadata = genes)
+
+cds <- preprocess_cds(cds, num_dim = 50)
+cds <- align_cds(cds, alignment_group = "orig.ident", residual_model_formula_str = "~ Type")
+
+cds <- reduce_dimension(cds)
+cds <- cluster_cells(cds)
+cds <- learn_graph(cds)
+
+plot_cells(cds, label_groups_by_cluster=FALSE,  color_cells_by = "Type") + 
+                scale_color_manual(values = rev(colorblind_vector(2))) 
+ggsave(path = "DataAnalysis/subCluster/Bcells/monocle3", filename="Bcellss_UMAP_monocle_byType.eps", width=3.5, height=3)
+plot_cells(cds, label_groups_by_cluster=FALSE,  color_cells_by = "cellCluster")
+ggsave(path = "DataAnalysis/subCluster/Bcells/monocle3", filename="Bcells_UMAP_monocle_byCluster.eps", width=3.5, height=3)
+```
+
+
+### Ig-related Gene Heatmaps
+
+First just grepping to get the Ig-related names
+```{r}
+names <- rownames(cells@assays$RNA@counts)[grepl("Igk|Igl|Igh|Jchain", rownames(cells@assays$RNA@counts))]
+```
+
+Geting the average counts for each of the sub clusters. 
+```{r}
+Average <- AverageExpression(cells, assay = "RNA", return.seurat = F)
+Average <- data.frame(Average$RNA)
+Average <- Average[rownames(Average) %in% names, ]
+Average <- as.data.frame(t(Average))
+```
+
+So intead of z-score tranformation, I am going to normalize the count values using a range of 0 to 1 and removed columns with NaN values. 
+
+```{r}
+nor <-function(x) { (x -min(x))/(max(x)-min(x))   }
+Average2 <- as.data.frame(lapply(Average, nor))
+Average2 <-as.data.frame(na.omit(t(Average2)))
+Average <- t(Average[,colSums(Average) > 0])
+colnames(Average2) <- c("C0", "C1", "C2", "C3", "C4")
+```
+
+```{r}
+pdf("DataAnalysis/subCluster/Bcells/Ig_heatmap_scaled.pdf", height=6, width=4)
+pheatmap::pheatmap(Average2, color = rev(colorblind_vector(50)), fontsize_row = 6)
+dev.off()
+```
+
+
+#### SCENIC
+```{r}
+load("SCENIC_output.rda")
+cells <- AddMetaData(cells, AUC)
+SceneGenes <- colnames(cells[[]])
+SceneGenes <- SceneGenes[grep("Atf4|Ets1|Jund|Irf5|Fox01|Mef2c|Rel", SceneGenes)]
+
+dir.create("./DataAnalysis/subCluster/Bcells/SCENIC")
+for (i in seq_along(SceneGenes)){
+  plot <- VlnPlot(cells, SceneGenes[i], pt.size = 0) + NoLegend()
+  ggsave(path = "./DataAnalysis/subCluster/Bcells/SCENIC", file = paste0("BcellsSCENIC_vlnplot_", SceneGenes[i], ".pdf"), height = 2.5, width = 4)
+  
+  plot <- VlnPlot(cells, SceneGenes[i], pt.size = 0) + NoLegend() + facet_grid(cells$Type ~.)
+  ggsave(path = "./DataAnalysis/subCluster/Bcells/SCENIC", file = paste0("BcellsSCENIC_vlnplot_", SceneGenes[i], "_facet.pdf"), height = 5, width = 4)
+}
+```
+
+
+
+```{r}
+saveRDS(cells, file = "./DataAnalysis/subCluster/Bcells/Bcells_integrated.rds")
+```
+
+
+## NK Cells Combine with ILC
+
+### Processing and Re-integrating
+
+```{r eval = FALSE}
+cells <- integrated[[]]
+cells <- subset(cells, Major %in% c("NK Cells", "ILC"))
+cells <- row.names(cells)
+subset <- subset(integrated, cells = cells)
+subset <- DietSeurat(subset, assays = "RNA")
+list <- SplitObject(object = subset, split.by = "orig.ident")
+
+for (i in 1:length(list)) {
+    list[[i]] <- SCTransform(list[[i]], verbose = FALSE)
+}
+rm(subset)
+
+features <- SelectIntegrationFeatures(object.list = list, nfeatures = 3000)
+list <- PrepSCTIntegration(object.list = list, anchor.features = features,
+verbose = FALSE)
+anchors <- FindIntegrationAnchors(object.list = list, normalization.method = "SCT",
+anchor.features = features, verbose = FALSE, k.filter = 50)
+cells <- IntegrateData(anchorset = anchors, normalization.method = "SCT", verbose = FALSE)
+rm(list)
+rm(anchors)
+```
+
+### Reclustering Innate Cells
+
+```{r eval = FALSE}
+cells <- ScaleData(object = cells, verbose = FALSE)
+cells <- RunPCA(object = cells, npcs = 40, verbose = FALSE)
+cells <- RunUMAP(object = cells, reduction = "pca", 
+    dims = 1:40)
+cells <- FindNeighbors(object = cells, dims = 1:25, force.recalc = T)
+cells <- FindClusters(object = cells, resolution = 0.4, force.recalc=T)
+
+dir.create("DataAnalysis/subCluster/InnateCells")
+```
+
+```{r}
+cells <- readRDS("DataAnalysis/subCluster/InnateCells/InnateCells_integrated.rds")
+```
+
+```{r}
+update_geom_defaults("point", list(stroke=0.1))
+DimPlot(object = cells, reduction = 'umap', label = T) + NoLegend()
+ggsave(path = "DataAnalysis/subCluster/InnateCells", filename="InnateCells_UMAP_res6.eps", width=3.5, height=3)
+
+DimPlot(object = cells, reduction = 'umap', group.by = "orig.ident") 
+ggsave(path = "DataAnalysis/subCluster/InnateCells", filename="InnateCells_orig.ident_UMAP_res6.eps", width=3.75, height=3)
+
+DimPlot(object = cells, reduction = 'umap', group.by = "Type", split.by = "Type") + scale_color_manual(values = rev(colorblind_vector(2))) 
+ggsave(path = "DataAnalysis/subCluster/InnateCells", filename="InnateCells_Type_UMAP_res6.eps", width=7.25, height=3)
+```
+
+### Innate Markers Graphing
+
+```{r}
+suppressPackageStartupMessages(library(schex))
+cells <- make_hexbin(cells, 40, dimension_reduction = "UMAP")
+
+ilc <- as.character(unlist(read.delim("./data/markers.genes/ilc_genes.txt", col.names = F)))
+nk <- as.character(unlist(read.delim("./data/markers.genes/nk_cell_genes.txt", col.names = F)))
+
+genelist <- c(ilc, nk)
+
+dir.create("DataAnalysis/subCluster/InnateCells/markers")
+dir.create("DataAnalysis/subCluster/InnateCells/markers/selected")
+
+DefaultAssay(cells) <- "RNA"
+
+for (i in seq_along(genelist)) {
+        if (length(which(rownames(cells@assays$RNA@counts) == genelist[i])) == 0){
+            next() #Need to loop here because plot_hexbin_feature() does not have a built-in function to deal with absence of selected gene
+        } else {
+        plot <- plot_hexbin_feature(cells, feature = genelist[i], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/subCluster/InnateCells/markers/selected", file = paste0( genelist[i], "_prop.pdf"), plot, height=3, width=3.25)
+        }
+    }
+
+```
+
+```{r eval = F}
+All.markers <- FindAllMarkers(cells, assay = "RNA", pseudocount.use = 0.1, only.pos = T) 
+write.table(All.markers, file = "DataAnalysis/subCluster/InnateCells/markers/FindAllMarkers_output.txt", col.names=NA, sep="\t",append=F)
+```
+
+```{r}
+All.markers <- read.delim("./DataAnalysis/subCluster/InnateCells/markers/FindAllMarkers_output.txt")
+top20 <- All.markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_logFC)
+top20 <- top20$gene #just want the IDs
+
+dir.create("DataAnalysis/subCluster/InnateCells/markers/TopClusterMarkers")
+for (i in seq_along(top20)) {
+    plot <- plot_hexbin_feature(cells, feature = top20[i], type = "counts", action = "prop_0")+ 
+             guides(fill=F, color = F) + 
+                scale_fill_gradientn(colors = rev(colorblind_vector(13))) 
+        ggsave(path = "DataAnalysis/subCluster/InnateCells/markers/TopClusterMarkers", file = paste0("Top20markers", "_", top20[i], "_prop.pdf"), plot, height=3, width=3.25)
+}
+```
+
+### Proportion Evaluation
+
+```{r}
+freq_table <- table(cells@active.ident, cells$Type)
+
+mTotal <- 13251
+cTotal <- 9734
+totals <- c(cTotal,mTotal)
+
+for (i in 1:2) { 
+    freq_table[,i] <- freq_table[,i]/totals[i]
+}
+
+freq_table <- reshape2::melt(freq_table)
+
+ggplot(freq_table, aes(x=as.factor(Var1), y=value, fill=Var2)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    xlab("Clusters") + 
+    coord_flip() 
+ggsave(path = "DataAnalysis/subCluster/InnateCells/", file = "relativeContribution_byClusterType_scaled.pdf", height=5, width=5)
+
+
+ggplot(freq_table, aes(x=as.factor(Var1), y=value, fill=Var2)) + 
+  geom_bar(stat="identity", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank()) + 
+   scale_fill_manual(values=rev(colorblind_vector(2))) + 
+  theme_classic() + 
+    xlab("Clusters") + 
+    coord_flip()
+ggsave(path = "DataAnalysis/subCluster/InnateCells/", file = "totalContribution_byClusterType_scaled.pdf", height=5, width=5)
+
+table <- table(cells@active.ident, cells$Type)
+
+Con <- 9734 #Sum of Healthy Cells
+MyoC <- 13251 #Sum of Sick Cells
+
+out <- NULL
+mat <- NULL
+for (i in 1:nrow(table)) {
+x <- c(Con, MyoC, table[i,1], table[i,2])
+dim(x) <- c(2,2)
+
+test <- prop.test(x[,2], n=x[,1], p = NULL, correct = FALSE)
+
+out <- c(test$p.value, test$estimate[1], test$estimate[2], test$conf.int[1], test$conf.int[2])
+mat <- rbind(mat, out)
+}
+mat <- as.data.frame(mat)
+
+
+colnames(mat) <- c("Pvalue", "Prop_Con", "Prop_MyoC", "OR_low", "OR_high")
+mat$FDR <- p.adjust(mat$Pvalue) #Need to correct for multiple comparisons
+mat$clusters <- rownames(table)
+write.table(mat, file = "./DataAnalysis/subCluster/InnateCells/ProportionTest_clusters.txt", col.names=NA, sep="\t",append=F)
+```
+
+### Cell Cycle Scoring
+
+```{r}
+cells <- CellCycleScoring(cells, s.features = s.genes, g2m.features = g2m.genes, set.ident = FALSE)
+
+dir.create("./DataAnalysis/subCluster/InnateCells/CellCycle")
+cells@meta.data$cellCluster <- cells@active.ident
+freq_table <- cells[[]]
+freq_table <- freq_table[,c("Type", "cellCluster", "Phase")]
+freq_table <- subset(freq_table, Phase != "Undecided") #removing undecided phases
+freq_table <- freq_table %>%
+    group_by(Type, cellCluster, Phase) %>%
+    summarise(n = n())
+
+freq_table$Phase <- factor(freq_table$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+ggplot(freq_table, aes(x=cellCluster, y=n, fill=Phase)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank())+ 
+    facet_grid(Type ~.) + 
+   scale_fill_manual(values=colorblind_vector(3)) + 
+  theme_classic()
+ggsave(path = "DataAnalysis/subCluster/InnateCells/CellCycle", file = "CellCycle_byCluster.pdf", height=4, width=6)
+
+cells <- subset(cells, Phase != "Undecided")
+cells$Phase <- factor(cells$Phase, levels = c("G1", "S", "G2M")) #ordering phases
+DimPlot(object = cells, reduction = 'umap', group.by = "Phase", split.by = "Type") +
+    scale_color_manual(values=colorblind_vector(3)) 
+
+
+ggsave(path = "DataAnalysis/subCluster/InnateCells/CellCycle", filename="CellCycle_UMAP_res6.pdf", width=7.25, height=3)
+```
+
+### Differential Gene Expression by Cluster
+
+```{r}
+dir.create("./DataAnalysis/subCluster/InnateCells/DGE")
+clusters <- as.character(unique(cells@active.ident))
+DefaultAssay(cells) <- "RNA"
+
+mat <- NULL
+for (i in seq_along(clusters)) {
+    tmp <- subset(cells, idents = clusters[i])
+    tmp <- NormalizeData(tmp, assay = "RNA") #after subset always normalize RNA
+    tmp <- SetIdent(tmp, value = tmp@meta.data$Type)
+    markers <- FindMarkers(object = tmp, 
+                only.pos = F, ident.1 = "MyoC", ident.2="Con", min.diff.pct = -Inf, 
+                logfc.threshold = -Inf, min.pct = -Inf)
+    markers$names <- rownames(markers)
+    markers  <- markers  %>%
+        mutate(Difference = pct.1 - pct.2)
+    
+    mat <- data.frame(markers)
+    write.table(mat, file=paste("./DataAnalysis/subCluster/InnateCells/DGE/InnateCells_differentialMarkers_MyoCvCon_", clusters[i], ".txt", sep=""),
+                sep="\t",append=F, row.names = FALSE)
+    mat=NULL
+}
+```
+
+
+```{r}
+file_list <- list.files("./DataAnalysis/subCluster/InnateCells/DGE/")
+file_list <- file_list[grepl("differentialMarkers", file_list)]
+files <- file.path(paste0("./DataAnalysis/subCluster/InnateCells/DGE/", file_list))
+
+marker_list <- list()
+for (i in 1:length(files)) {
+    marker_list[[i]] <- read.delim(files[i])
+}
+names(marker_list) <- paste0("C", 0:4)#assign the cell type to each element of the list
+
+dir.create("DataAnalysis/subCluster/InnateCells/DGE/visualizations")
+
+for (i in seq_along(marker_list)) {
+tmp <- marker_list[[i]]
+tmp <- tmp %>%
+    mutate(Trend = ifelse(p_val_adj <= 0.05 & avg_logFC > 0, "Up",
+                    ifelse(p_val_adj <= 0.05 & avg_logFC < 0, "Down", "None")))
+#filter <- subset(tmp, p_val_adj <= 0.05)
+top10 <- tmp %>% top_n(n =10, wt = avg_logFC + 4*Difference)
+bottom10 <- tmp %>% top_n(n =10, wt = -(avg_logFC + 4*Difference))
+
+
+
+ggplot(subset(tmp, names %in% c(top10$names, bottom10$names)), aes(x=reorder(names, avg_logFC), y=avg_logFC)) + 
+   geom_bar(stat = "identity", aes(fill=Trend)) + 
+  theme_classic() + 
+    scale_fill_manual(values = rev(colorblind_vector(length(unique(tmp$Trend)))))+
+    geom_hline(yintercept = 0) + 
+     guides(color=F) + 
+    coord_flip() + 
+    theme(axis.title = element_blank())
+ggsave(path = "./DataAnalysis/subCluster/InnateCells/DGE/visualizations", file = paste0("TopGenes_byDiffnLFC_", names(marker_list[i]), "_Up.pdf"), height = 3, width=3)
+}
+```
+
+
+
+
+
+### Constructing Trajectory
+
+```{r}
+dir.create("DataAnalysis/subCluster/InnateCells/monocle3")
+library(monocle3)
+expr_matrix <- cells@assays$RNA@counts
+metadata <- cells[[]]
+genes <- data.frame(gene_short_name = rownames(cells[["RNA"]]),
+                             row.names = rownames(cells[["RNA"]]))
+
+cds <- new_cell_data_set(expr_matrix,
+                         cell_metadata = metadata,
+                         gene_metadata = genes)
+
+cds <- preprocess_cds(cds, num_dim = 50)
+cds <- align_cds(cds, alignment_group = "orig.ident", residual_model_formula_str = "~ Type")
+
+cds <- reduce_dimension(cds)
+cds <- cluster_cells(cds)
+cds <- learn_graph(cds)
+
+plot_cells(cds, label_groups_by_cluster=FALSE,  color_cells_by = "Type") + 
+                scale_color_manual(values = rev(colorblind_vector(2))) 
+ggsave(path = "DataAnalysis/subCluster/InnateCells/monocle3", filename="InnateCellss_UMAP_monocle_byType.eps", width=3.5, height=3)
+plot_cells(cds, label_groups_by_cluster=FALSE,  color_cells_by = "cellCluster")
+ggsave(path = "DataAnalysis/subCluster/InnateCells/monocle3", filename="InnateCells_UMAP_monocle_byCluster.eps", width=3.5, height=3)
+```
+
+
+
+```{r}
+NK <- read.delim("~/Documents/GitHub/Lasrado_Myocarditis/DataAnalysis/DGE/cellType_differentialMarkers_MyoCvCon_NK Cells.txt") 
+    NK <- NK %>%
+        mutate(Trend = ifelse(p_val_adj <= 0.05 & avg_logFC > 0, "Up",
+                    ifelse(p_val_adj <= 0.05 & avg_logFC < 0, "Down", "None")))
+    filter <- subset(NK, p_val_adj <= 0.05)
+    top15 <- filter %>% top_n(n =15, wt = avg_logFC)
+    bottom15 <- filter %>% top_n(n =15, wt = -avg_logFC)
+    names <- c(as.character(bottom15$names), as.character(top15$names))
+ 
+    ggplot(data = NK[NK$names %in% names,], aes(x=reorder(names, avg_logFC), y = avg_logFC)) + 
+        geom_bar(stat = "identity", aes(fill = Trend), color="black") + 
+        geom_hline(yintercept = 0) + 
+        coord_flip() + 
+        theme_classic() + 
+        theme(axis.title = element_blank()) + 
+        scale_fill_manual(values = rev(colorblind_vector(2))) +
+        guides(fill = F)
+    ggsave(path = "./DataAnalysis/subCluster/InnateCells/DGE", file =  "NKcells_OverallTopMarkers.pdf", height = 5, width=3)
+
+
+
+```
+
+#### SCENIC
+```{r}
+load("SCENIC_output.rda")
+cells <- AddMetaData(cells, AUC)
+SceneGenes <- colnames(cells[[]])
+SceneGenes <- SceneGenes[grep("Egr1|Ets1|Ifzf1|Elf1|Runx3|Irf7|Stat4|Nfatc1|Atf3|Bhlhe40|Irf9|Max|Cebp|Klf3|Fosl2|Nfil3|Bcl3", SceneGenes)]
+
+dir.create("./DataAnalysis/subCluster/InnateCells/SCENIC")
+for (i in seq_along(SceneGenes)){
+  plot <- VlnPlot(cells, SceneGenes[i], pt.size = 0) + NoLegend()
+  ggsave(path = "./DataAnalysis/subCluster/InnateCells/SCENIC", file = paste0("InnateCellsSCENIC_vlnplot_", SceneGenes[i], ".pdf"), height = 2.5, width = 4)
+  
+  plot <- VlnPlot(cells, SceneGenes[i], pt.size = 0) + NoLegend() + facet_grid(cells$Type ~.)
+  ggsave(path = "./DataAnalysis/subCluster/InnateCells/SCENIC", file = paste0("InnateCellsSCENIC_vlnplot_", SceneGenes[i], "_facet.pdf"), height = 5, width = 4)
+}
+```
+
+```{r}
+saveRDS(cells, file = "./DataAnalysis/subCluster/InnateCells/InnateCells_integrated.rds")
+```
+
+***
+
+#Conclusions
+
+Workflow is not complete, as of 6/7/2020, waiting to make cell assignments to move on to further analyses. 
+
+```{r}
+sessionInfo()
+```
+
+
+
+
+
+
+
