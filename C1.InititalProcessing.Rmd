@@ -1,5 +1,5 @@
 ---
-title: Analysis of single-cell sequencing data in murine myocarditis
+title: Initital processing of Renal Clear Cell Carcinoma samples
 author: 
 - name: Nick Borcherding
   email: ncborch@gmail.com
@@ -18,11 +18,6 @@ library(BiocStyle)
 
 # Introduction
 
-## Structure of Project
-
-Analysis is broken into 2 major folders/sub directories. The *data* folder will includes the output of Cellranger for each run (in the folders **Run1** and **Run2**), as well as markers for cell types provided in the dropbox folder (**marker.genes**). The *data* folder is also the place to store processed outputs, like the integrated UMAP object and enrichment results.
-
-In contrast, the *DataAnalysis* is for outputs that could be the basis of figure or table generation. For example, the **UMAP** subfolder includes the basic UMAP projections for cluster, type, and run, but also the expression of **LineageMarkers** and **TopeClusterMarkers** using the schex proportion of samples approach.
 
 ##Computer Info:
 Analysis is being run on a 13-inch Macbook Pro (2017) with 3.5 GHz Dual-Core i7 and 16 GB of 2133 MHz LPDDR3. There is a limit to the speed and RAM, so for the purposes of the markdown file, I will not run some of the code blocks during the kniting (look at eval = F). You will also see the call *rm()* frequently to just remove non-vital objects from the global environment.
@@ -37,6 +32,7 @@ In general I like to load libraries here that we will use universally, and then 
 suppressPackageStartupMessages(library(Seurat))
 suppressPackageStartupMessages(library(ggplot2))
 suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(gridExtra))
 ```
 
 I also like to set a color palette before I begin - this way all the colors are consistent throughout the publication figures.
@@ -50,26 +46,41 @@ colorblind_vector <- colorRampPalette(c("#FF4B20", "#FFB433", "#C6FDEC", "#7AC5F
 
 # Loading and Processing the Data
 
+```{r}
+mito <- c("ATP8", "ATP6", "CO1", "CO2", "CO3", "CYB", "ND1", "ND2", "ND3", "ND4L", "ND4", "ND5", "ND6", "RNR2", "TA", "TR", "TN", "TD", "TC", "TE", "TQ", "TG", "TH", "TI", "TL1", "TL2", "TK", "TM", "TF", "TP", "TS1", "TS2", "TT", "TW", "TY", "TV", "RNR1")
+```
+
+
 ## Load Data
 ```{r eval=FALSE}
-base_dir <- "~/Documents/GitHub/Lasrado_Myocarditis/data/"
-
-H1 <- Read10X(data.dir = paste0(base_dir, "Run1/Healthy"))
-colnames(x = H1) <- paste('H1', colnames(x = H1), sep = '_')
-H1 <- CreateSeuratObject(H1)
-
-H2 <- Read10X(data.dir = paste0(base_dir, "/Run2/Healthy"))
-colnames(x = H2) <- paste('H2', colnames(x = H2), sep = '_')
-H2 <- CreateSeuratObject(H2)
-
-S1 <- Read10X(data.dir = paste0(base_dir, "/Run1/Sick"))
-colnames(x = S1) <- paste('S1', colnames(x = S1), sep = '_')
-S1 <- CreateSeuratObject(S1)
-
-S2 <- Read10X(data.dir = paste0(base_dir, "/Run2/Sick"))
-colnames(x = S2) <- paste('S2', colnames(x = S2), sep = '_')
-S2 <- CreateSeuratObject(S2)
+dir.create("dataExplore")
+dir.create("dataExplore/qc")
+file_list <- list.files("./data/")
+list <- list()
+for (i in seq_along(file_list)){
+    tmp <-  Read10X(paste0("./data/", file_list[i]))
+    colnames(tmp) <- paste(file_list[i], colnames(tmp), sep = '_')
+    tmp <- CreateSeuratObject(tmp)
+    x <- which(rownames(tmp@assays$RNA) %in% mito)
+    rownames(tmp@assays$RNA)[x] <- paste0("MT-", rownames(tmp@assays$RNA)[x])
+    
+    tmp[["mito.genes"]] <- PercentageFeatureSet(tmp, pattern = "^MT-")
+    
+    p1 <- VlnPlot(object = tmp, features = c("nCount_RNA")) + theme(legend.position = "none")
+    p2 <- VlnPlot(object = tmp, features = c("nFeature_RNA")) + theme(legend.position = "none")
+    p3 <- VlnPlot(object = tmp, features = c("mito.genes")) + theme(legend.position = "none")
+    
+    pdf(paste0("./dataExplore/qc/", file_list[i], ".pdf"), height = 8, width=12)
+    grid.arrange(p1, p2, p3, ncol = 3)
+    dev.off()
+    tmp <- subset(tmp, subset = mito.genes < 10 & nFeature_RNA < 3000)
+    
+    list[[i]] <- tmp
+}
+names(list) <- file_list
 ```
+
+
 
 ## Processing
 
@@ -80,9 +91,7 @@ Transforming into SCT - Based on the description of differing chemistry versions
 Essentially it is trying to limit biological heterogeneity and technical effects during the integration of the data. After integrating though - we will use the *RNA* assay, as the principal source of expression values. 
 
 ```{r eval=FALSE}
-options(future.globals.maxSize= 2621440000) #Need this to transfer transformation so increasing from 500 Mb to 2.5 Gb - math: 2500*1024^2 bytes
-
-list <- list(H1, H2, S1, S2)
+options(future.globals.maxSize= 5767168000) #Need this to transfer transformation so increasing from 500 Mb to 5.5 Gb - math: 5500*1024^2 bytes
 
 for (i in 1:length(list)) {
     list[[i]] <-  suppressMessages(SCTransform(list[[i]], verbose = FALSE))
@@ -92,14 +101,12 @@ select.features <- SelectIntegrationFeatures(object.list = list, nfeatures = 300
 list <- PrepSCTIntegration(object.list = list, anchor.features = select.features, 
     verbose = FALSE)
 
-rm(list = c("H1","H2","S1","S2")) #Saving Memory
-
 anchors <- FindIntegrationAnchors(object.list = list, normalization.method = "SCT", 
     anchor.features = select.features, verbose = FALSE)
-integrated <- IntegrateData(anchorset = anchors, normalization.method = "SCT", 
-    verbose = FALSE)
 rm(list)
-rm(anchors)
+anchors <- IntegrateData(anchorset = anchors, normalization.method = "SCT", 
+    verbose = FALSE)
+
 ```
 
 The UMAP visualizations can be difficult to interpret, before I select my parameters, I like to run a long loops to test the various principal components and dimensions to select. This is not particularly elegant, but is better than assuming set dimensions of the vignettes. I am not going to include the folder below in the github repo - its about 800 graphs and not helpful beyond the initial steps. The *DataExplore* folder is where I will place the evaluation figures, but for the purposes of this analysis, I am not going to include the folder in the Git hub repo, because it is largely a waste of space.
