@@ -106,7 +106,7 @@ anchors <- FindIntegrationAnchors(object.list = list, normalization.method = "SC
 rm(list)
 anchors <- IntegrateData(anchorset = anchors, normalization.method = "SCT", 
     verbose = FALSE)
-
+saveRDS(anchors, "./data/integrated_anchors.rds")
 ```
 
 The UMAP visualizations can be difficult to interpret, before I select my parameters, I like to run a long loops to test the various principal components and dimensions to select. This is not particularly elegant, but is better than assuming set dimensions of the vignettes. I am not going to include the folder below in the github repo - its about 800 graphs and not helpful beyond the initial steps. The *DataExplore* folder is where I will place the evaluation figures, but for the purposes of this analysis, I am not going to include the folder in the Git hub repo, because it is largely a waste of space.
@@ -116,7 +116,7 @@ dir.create("DataExplore/")
 dir.create("DataExplore/UMAP")
 for (i in c(10,15,20,25,30,35,40)) {
     
-    integrated2 <- ScaleData(object = integrated, verbose = FALSE)
+    integrated2 <- ScaleData(object = anchors, verbose = FALSE)
     integrated2 <- RunPCA(object = integrated2, npcs = 40, verbose = FALSE)
     integrated2 <- RunUMAP(object = integrated2, reduction = "pca", 
         dims = 1:i) #dimensions for  UMAP
