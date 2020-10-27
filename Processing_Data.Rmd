@@ -1,0 +1,49 @@
+---
+title: "Processing_Data"
+output: html_document
+---
+
+I downloaded the raw data from the GEO acession and just sorted the four samples with paired blood and tumor runs. Below just loops over the loading of the 8 sequencing runs.
+
+```{r}
+library(Seurat)
+file_list <- list.files("./data/rawData")
+
+list <- list()
+for (i in seq_along(file_list)){
+  tmp <-  Read10X(paste0("./data/rawData/", file_list[i]))
+  colnames(tmp) <- paste(file_list[i], colnames(tmp), sep = '_')
+  tmp <- CreateSeuratObject(tmp)
+  list[[i]] <- tmp
+}
+names(list) <- file_list
+rm(tmp)
+```
+
+```{r}
+options(future.globals.maxSize= 15728640000) #Need this to transfer transformation so increasing from 500 Mb to 4 Gb - math: 4000*1024^2 bytes
+
+for (i in 1:length(list)) {
+    list[[i]] <- NormalizeData(list[[i]], verbose = FALSE)
+    list[[i]] <- FindVariableFeatures(list[[i]], selection.method = "vst", 
+        nfeatures = 2000, verbose = FALSE)
+}
+
+select.features <- SelectIntegrationFeatures(object.list = list, nfeatures = 3000)
+
+anchors <- FindIntegrationAnchors(object.list = list, 
+    anchor.features = select.features, verbose = FALSE)
+#rm(list)
+
+dir.create("data")
+
+saveRDS(anchors, file = "data/anchors.rds")
+#anchors <- readRDS("data/anchors.rds")
+
+anchors <- IntegrateData(anchorset = anchors, verbose = FALSE)
+
+
+dir.create("data/Processed")
+saveRDS(anchors, file = "data/Processed/integrated_PreClustering.rds")
+```
+
