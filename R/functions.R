@@ -64,8 +64,9 @@ chainCheck <- function(chain)  {
 # a relational data frame without redundancy.
 
 # Chain specifies which chain to pull the information from
-globalConvergence <- function(chain = "TCRB") {
-    TCR <- getTCR(chain)
+globalConvergence <- function(tmp, chain = "TCRB") {
+    
+    TCR <- getTCR(tmp, chain)
     TCR_dist <- as.matrix(stringdistmatrix(TCR$Var1, method = "lv"))
     TCR_dist[TCR_dist >= 2] <- NA
     for (i in seq_len(ncol(TCR_dist))) {
@@ -80,7 +81,7 @@ globalConvergence <- function(chain = "TCRB") {
     return(positions_LV)
 }
 
-getTCR <- function(chain) {
+getTCR <- function(tmp, chain) {
     cdr3 <- chainCheck(chain)[[1]]
     vgene <- chainCheck(chain)[[2]]
     TCR <- as.data.frame(na.omit(table(tmp[,cdr3])))
@@ -94,9 +95,9 @@ getTCR <- function(chain) {
     return(TCR)
 }
 
-localConvergence <- function(chain = "TCRB", motif.length = 3) {
+localConvergence <- function(tmp, chain = "TCRB", motif.length = 3) {
     load("./data/AA_combinations.rda")
-    TCR <- getTCR(chain)
+    TCR <- getTCR(tmp,chain)
     out <- matrix(nrow = nrow(TCR), ncol =length(AA_combinations), 0)
     colnames(out) <- AA_combinations
     rownames(out) <- TCR$Var1
@@ -133,4 +134,24 @@ localConvergence <- function(chain = "TCRB", motif.length = 3) {
     positions_motif <- data.frame(df.edge, "Type" = "Motif")
     positions_motif <- unique(positions_motif)
     return(positions_motif)
+}
+
+#function for bootstrapping global convergence of pbmc cells
+sampleControl_gc <- function(i) {
+    con <- controls[sample(nrow(controls), nrow(TCR)),]
+    cdr3 <- chainCheck(chain)[[1]]
+    con2 <- pbmc[pbmc[,cdr3] %in% con$Var1,]
+    gc_con <- globalConvergence(con2, chain = "TCRB")
+    gc_con <- checkVgenes(gc_con, con)
+    y <- nrow(gc_con)
+}
+
+#function for bootstrapping local convergence of pbmc cells
+sampleControl_lc <- function(i) {
+    con <- controls[sample(nrow(controls), nrow(TCR)),]
+    cdr3 <- chainCheck(chain)[[1]]
+    con2 <- pbmc[pbmc[,cdr3] %in% con$Var1,]
+    lc_con <- localConvergence(con2, chain = "TCRB")
+    lc_con <- checkVgenes(gc_con, con)
+    y <- nrow(lc_con)
 }

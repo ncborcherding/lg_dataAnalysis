@@ -7,9 +7,8 @@ output: html_document
 ```{r}
 library(scRepertoire)
 source("./R/functions.R")
-```
+setwd("~/Documents/GitHub/lg_dataAnalysis")
 
-```{r setup, include=FALSE}
 colorblind_vector <- colorRampPalette(c("#FF4B20", "#FFB433", "#C6FDEC", "#7AC5FF", "#0348A6"))
 ```
 
@@ -19,6 +18,8 @@ colorblind_vector <- colorRampPalette(c("#FF4B20", "#FFB433", "#C6FDEC", "#7AC5F
 #Load Data
 ##################################
 file_list <- list.files("./data/")
+file_list <- file_list <- file_list[!grepl(".rda", file_list)]
+
 contig_list <- list()
 for (i in seq_along(file_list)){
     contig_list[[i]] <- read.csv(paste0("./data/", file_list[i], "/filtered_contig_annotations.csv"))
@@ -58,13 +59,39 @@ combined <- addVariable(combined, "Patient", c("Pt1", "Pt2", "Pt3", "Pt4", "Pt5"
 ```{r}
 library(stringr)
 library(stringdist)
+library(parallel)
 
 
 
-tmp <- combined[[10]]
-TCR <- getTCR("TCRB")
-positions_LV <- globalConvergence(chain = "TCRB")
-positions_motif <- localConvergence("TCRB", motif.length=3)
+tmp <- combined[[15]]
+TCR <- getTCR(tmp, "TCRB")
+positions_LV <- globalConvergence(tmp, chain = "TCRB")
+positions_LV <- checkVgenes(positions_LV, TCR)
+positions_motif <- localConvergence(tmp, chain = "TCRB", motif.length=3)
+
+load("./data/pbmcControls.rda")
+
+controls <- getTCR(pbmc, "TCRB")
+
+sampleControl_gc <- function(i) {
+    con <- controls[sample(nrow(controls), nrow(TCR)),]
+    cdr3 <- chainCheck(chain)[[1]]
+    con2 <- pbmc[pbmc[,cdr3] %in% con$Var1,]
+    gc_con <- globalConvergence(con2, chain = "TCRB")
+    gc_con <- checkVgenes(gc_con, con)
+    y <- nrow(gc_con)
+}
+
+sampleControl_lc <- function(i) {
+    con <- controls[sample(nrow(controls), nrow(TCR)),]
+    cdr3 <- chainCheck(chain)[[1]]
+    con2 <- pbmc[pbmc[,cdr3] %in% con$Var1,]
+    lc_con <- localConvergence(con2, chain = "TCRB")
+    lc_con <- checkVgenes(gc_con, con)
+    y <- nrow(lc_con)
+}
+
+bootstrap_LV <- mclapply(1:1000, sampleControl_gc, mc.cores = 3)
 
 ```
 
