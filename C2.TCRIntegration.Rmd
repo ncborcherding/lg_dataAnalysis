@@ -61,9 +61,9 @@ library(stringdist)
 
 
 
-tmp <- combined[[1]]
-
-positions_LV <- globalConvergence(chain = "TCRA")
+tmp <- combined[[10]]
+TCR <- getTCR("TCRB")
+positions_LV <- globalConvergence(chain = "TCRB")
 positions_motif <- localConvergence("TCRB", motif.length=3)
 
 ```
@@ -74,7 +74,8 @@ library(ggraph)
 library(igraph)
 
 edges <- rbind.data.frame(positions_LV, positions_motif)
-vertices <- as.data.frame(TCRA$Var1)
+edges <- checkVgenes(edges, TCR)
+vertices <- as.data.frame(TCR$Var1)
 
 
 
