@@ -6,6 +6,7 @@ output: html_document
 ---
 ```{r}
 library(scRepertoire)
+source("./R/functions.R")
 ```
 
 ```{r setup, include=FALSE}
@@ -14,6 +15,9 @@ colorblind_vector <- colorRampPalette(c("#FF4B20", "#FFB433", "#C6FDEC", "#7AC5F
 
 
 ```{r}
+###################################
+#Load Data
+##################################
 file_list <- list.files("./data/")
 contig_list <- list()
 for (i in seq_along(file_list)){
@@ -22,6 +26,7 @@ for (i in seq_along(file_list)){
 
 names(contig_list) <- file_list
 
+###Need to remove prefixes of these samples that were added previously
 for (i in c(4,5,6, 13,14,15)) {
     contig_list[[i]]$barcode <- substr(contig_list[[i]]$barcode, 11, 28)
 }
@@ -29,6 +34,9 @@ for (i in c(4,5,6, 13,14,15)) {
 
 
 ```{r}
+###################################
+#Combine Contigs
+###################################
 combined <- combineTCR(contig_list, samples = file_list, ID = rep("1", 15), cells = c("T-AB"), filterMulti = T, removeNA = T)
 
 for (i in seq_along(combined)) {
@@ -38,129 +46,28 @@ for (i in seq_along(combined)) {
 combined <- addVariable(combined, "Patient", c("Pt1", "Pt2", "Pt3", "Pt4", "Pt5", "Pt6", "Pt1", "Pt2", "Pt3", "Pt1", "Pt2", "Pt3", "Pt4", "Pt5", "Pt6"))
 ```
 
-
-####
-
-```{r}
-getPostitions <- function(out, integer.start, integer.stop) {
-    form <- paste0("[", integer.start, "-", integer.stop, "]")
-    positions <- which(matrix(grepl(form, out), ncol=ncol(out)), arr.ind = TRUE)
-
-    for (y in seq_len(nrow(positions))) {
-        a <- positions[y,1]
-        b <- positions[y,2]
-        if (a < b) {
-            tmp <- a
-            positions[y,1] <- b
-            positions[y,2] <- tmp
-        }
-    }
-    positions <- unique(positions)
-    return(positions)
-}
-```
-
-
-Global Convergence
+* Check AA motifs for position along cdr3 - i.e. what is 10x Cell Ranger providing?
+* bootstrap comparison of LV of random TCR in plasma healthy to results, take lowest global similarity and compare
+    * filter is just < 2 efit distance
+* bootstrap comparison of motif results of random TCR in plasma healthy to results
+    * filter <- enrichment in group vs comparison > 10-fold
+    * filter <- probability < 0.001
+* additional filter with checkVgenes
+    
 
 ```{r}
+library(stringr)
 library(stringdist)
+
+
+
 tmp <- combined[[1]]
 
-TCRA <- as.data.frame(na.omit(table(tmp[,"cdr3_aa1"])))
-TCRA$length <- nchar(as.character(TCRA$Var1))
-TCRA_dist <- as.matrix(stringdistmatrix(as.character(TCRA$Var1, method = "lv")))
-TCRA_dist[TCRA_dist >= 2] <- NA
+positions_LV <- globalConvergence(chain = "TCRA")
+positions_motif <- localConvergence("TCRB", motif.length=3)
 
-for (i in seq_len(ncol(TCRA_dist))) {
-    TCRA_dist[i,i] <- NA
-}
-
-TCRB <- na.omit(unique(tmp[,"cdr3_aa2"]))
-TCRB_dist <- as.matrix(stringdistmatrix(TCRB, method = "lv"))
-TCRB_dist[TCRB_dist >= 2] <- NA
-
-for (i in seq_len(ncol(TCRB_dist))) {
-    TCRB_dist[i,i] <- NA
-}
-
-
-positions_LV <- getPostitions(TCRA_dist, 0,1)
-positions_LV <- data.frame(positions_LV, "Type" = "LV")
-colnames(positions_LV)[1:2] <- c("To", "From")
-
-positions_LV$To <- as.character(TCRA$Var1)[positions_LV$To]
-positions_LV$From <- as.character(TCRA$Var1)[positions_LV$From]
 ```
 
-
-```{r}
-##################
-#Local Convergence
-###################
-AA_ref <- unique(unlist(strsplit(as.character(TCRA$Var1), "")))
-AA_ref <- rep(AA_ref, 3)
-AA_combinations <- unique(as.data.frame(t(combn(AA_ref, 3))))
-AA_combinations <- unite(AA_combinations, "comb", sep="")
-AA_combinations <- AA_combinations$comb
-save(AA_combinations, file = "AA_combinations.rda", compress = "xz")
-
-out <- matrix(nrow = nrow(TCRA), ncol =length(AA_combinations), 0)
-colnames(out) <- AA_combinations
-rownames(out) <- TCRA$Var1
-
-for (i in seq_len(nrow(TCRA))) {
-    tmp <- as.character(TCRA$Var1[i])
-    for (j in seq_len(nchar(tmp))) {
-        string <- substr(tmp, j, j+2)
-    if (string %in% AA_combinations & nchar(string) == 3) {
-        position <- which(colnames(out) == string)
-        out[i,position] <- out[i,position] + 1
-    } else {
-        next()
-    }
-    }
-}
-out[out == 0] <- NA
-colnames
-
-getPostitions <- function(out, integer.start, integer.stop, order = FALSE) {
-    form <- paste0("[", integer.start, "-", integer.stop, "]")
-    positions <- which(matrix(grepl(form, out), ncol=ncol(out)), arr.ind = TRUE)
-    if (order == TRUE) {
-        for (y in seq_len(nrow(positions))) {
-            a <- positions[y,1]
-            b <- positions[y,2]
-            if (a < b) {
-                tmp <- a
-                positions[y,1] <- b
-               positions[y,2] <- tmp
-            }
-        }
-    }
-   return(positions)
-}
-positions_motif <- getPostitions(out, 0,9)
-motifs <- unique(positions_motif[,2])
-df.edge <- NULL
-for (i in seq_along(motifs)) {
-    correspond <- positions_motif[positions_motif[,2] == motifs[i],]
-    if (length(correspond) == 2) {
-        next()
-    }
-    out <- t(combn(c(correspond[,1], correspond[,1]), 2))
-    out <- unique(out)
-    out <- out[out[,1] != out[,2],]
-    To <- as.character(TCRA$Var1)[out[,1]]
-    From <- as.character(TCRA$Var1)[out[,2]]
-    out <- data.frame(To,From)
-    df.edge <- rbind(df.edge, out)
-}
-
-
-
-positions_motif <- data.frame(df.edge, "Type" = "Motif")
-```
 
 ```{r}
 library(ggraph)
