@@ -2,3 +2,4 @@
 *.gz
 Data/integrated_anchors
 Data/integrated_anchors.rds
+.DS_Store

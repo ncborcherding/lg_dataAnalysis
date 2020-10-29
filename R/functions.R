@@ -73,6 +73,9 @@ globalConvergence <- function(tmp, chain = "TCRB") {
         TCR_dist[i,i] <- NA
     }
     positions_LV <- getPostitions(TCR_dist, 0,1, order = T)
+    if (nrow(positions_LV) == 0) {
+        return(positions_LV)
+    }
     positions_LV <- data.frame(positions_LV, "Type" = "LV")
     colnames(positions_LV)[1:2] <- c("To", "From")
     
@@ -95,48 +98,55 @@ getTCR <- function(tmp, chain) {
     return(TCR)
 }
 
-localConvergence <- function(tmp, chain = "TCRB", motif.length = 3) {
+localConvergence <- function(tmp, chain = "TCRB", motif.length = 3, filter.0 =TRUE) {
     load("./data/AA_combinations.rda")
     TCR <- getTCR(tmp,chain)
-    out <- matrix(nrow = nrow(TCR), ncol =length(AA_combinations), 0)
-    colnames(out) <- AA_combinations
-    rownames(out) <- TCR$Var1
+    positions <- NULL
+    vgenes <- unique(TCR[,4])
+    for (j in seq_along(vgenes)) {
+        subset <- TCR[TCR$vgene %in% vgenes[j],]
+        out <- matrix(nrow = nrow(subset), ncol =length(AA_combinations), 0)
+        colnames(out) <- AA_combinations
+        rownames(out) <- subset$Var1
     
-    for (i in seq_len(nrow(TCR))) {
-        tmp <- as.character(TCR$Var1[i])
-        for (j in seq_len(nchar(tmp))) {
-            string <- substr(tmp, j, j+(motif.length-1))
-            if (string %in% AA_combinations & nchar(string) == motif.length) {
-                position <- which(colnames(out) == string)
-                out[i,position] <- out[i,position] + 1
-            } else {
-                next()
+        for (i in seq_len(nrow(subset))) {
+            tmp <- as.character(subset$Var1[i])
+            for (j in seq_len(nchar(tmp))) {
+                string <- substr(tmp, j, j+(motif.length-1))
+                if (string %in% AA_combinations & nchar(string) == motif.length) {
+                    position <- which(colnames(out) == string)
+                    out[i,position] <- out[i,position] + 1
+                } else {
+                    next()
+                }
             }
         }
+    if (filter.0 == TRUE) {
+        out[out == 0] <- NA
     }
-    out[out == 0] <- NA
     positions_motif <- getPostitions(out, 0,9)
     motifs <- unique(positions_motif[,2])
     df.edge <- NULL
-    for (i in seq_along(motifs)) {
-        correspond <- positions_motif[positions_motif[,2] == motifs[i],]
+    for (k in seq_along(motifs)) {
+        correspond <- positions_motif[positions_motif[,2] == motifs[k],]
         if (length(correspond) == 2) {
             next()
         }
         out <- t(combn(c(correspond[,1], correspond[,1]), 2))
         out <- unique(out)
         out <- out[out[,1] != out[,2],]
-        To <- as.character(TCR$Var1)[out[,1]]
-        From <- as.character(TCR$Var1)[out[,2]]
-        out <- data.frame(To,From)
+        To <- as.character(subset$Var1)[out[,1]]
+        From <- as.character(subset$Var1)[out[,2]]
+        out <- data.frame(To,From, spec.Motif = AA_combinations[motifs[k]])
         df.edge <- rbind(df.edge, out)
+        }
+    positions <- rbind(positions, df.edge)
     }
-    positions_motif <- data.frame(df.edge, "Type" = "Motif")
-    positions_motif <- unique(positions_motif)
-    return(positions_motif)
+    positions <- data.frame(positions, "Type" = "Motif")
+    positions<- unique(positions)
+    return(positions)
 }
 
-#function for bootstrapping global convergence of pbmc cells
 sampleControl_gc <- function(i) {
     con <- controls[sample(nrow(controls), nrow(TCR)),]
     cdr3 <- chainCheck(chain)[[1]]
@@ -146,12 +156,11 @@ sampleControl_gc <- function(i) {
     y <- nrow(gc_con)
 }
 
-#function for bootstrapping local convergence of pbmc cells
 sampleControl_lc <- function(i) {
     con <- controls[sample(nrow(controls), nrow(TCR)),]
     cdr3 <- chainCheck(chain)[[1]]
     con2 <- pbmc[pbmc[,cdr3] %in% con$Var1,]
-    lc_con <- localConvergence(con2, chain = "TCRB")
-    lc_con <- checkVgenes(gc_con, con)
-    y <- nrow(lc_con)
+    lc_con <- localConvergence(con2, chain = "TCRB", filter.0 = FALSE)
+    y <- unlist(table(lc_con$spec.Motif))
+    return(y)
 }

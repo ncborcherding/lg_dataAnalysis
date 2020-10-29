@@ -18,7 +18,7 @@ colorblind_vector <- colorRampPalette(c("#FF4B20", "#FFB433", "#C6FDEC", "#7AC5F
 #Load Data
 ##################################
 file_list <- list.files("./data/")
-file_list <- file_list <- file_list[!grepl(".rda", file_list)]
+file_list <- file_list <- file_list[!grepl(".rda|.rds", file_list)]
 
 contig_list <- list()
 for (i in seq_along(file_list)){
@@ -60,6 +60,7 @@ combined <- addVariable(combined, "Patient", c("Pt1", "Pt2", "Pt3", "Pt4", "Pt5"
 library(stringr)
 library(stringdist)
 library(parallel)
+library(pbmcapply)
 
 
 
@@ -69,30 +70,30 @@ positions_LV <- globalConvergence(tmp, chain = "TCRB")
 positions_LV <- checkVgenes(positions_LV, TCR)
 positions_motif <- localConvergence(tmp, chain = "TCRB", motif.length=3)
 
-load("./data/pbmcControls.rda")
 
+load("./data/pbmcControls.rda")
 controls <- getTCR(pbmc, "TCRB")
 
-sampleControl_gc <- function(i) {
-    con <- controls[sample(nrow(controls), nrow(TCR)),]
-    cdr3 <- chainCheck(chain)[[1]]
-    con2 <- pbmc[pbmc[,cdr3] %in% con$Var1,]
-    gc_con <- globalConvergence(con2, chain = "TCRB")
-    gc_con <- checkVgenes(gc_con, con)
-    y <- nrow(gc_con)
+bootstrap_gc <- pbmclapply(1:1000, sampleControl_gc, mc.cores = 3)
+bootstrap_lc <- pbmclapply(1:1000, sampleControl_lc, mc.cores = 3)
+
+#Make single data frame of motifs in bootstrap values
+x <- lapply(bootstrap_lc, function(x){data.frame(x)})
+df <- Reduce(function(x, y) merge(x=x, y=y, by="Var1", all.x=T, all.y=T), x)
+df[is.na(df)] <- 0
+
+##for each motif, calculate p-value and fold-change
+table <- as.data.frame(table(positions_motif$spec.Motif))
+
+for (i in seq_len(nrow(table))) {
+  vector <- df[table[,"Var1"][i], 2:ncol(df)]
+  number <- table[i,"Freq"]
+  table$p[i] <- length(vector[vector >= number])/length(vector)
+  table$fc[i] <- number/median(as.numeric(vector))
 }
-
-sampleControl_lc <- function(i) {
-    con <- controls[sample(nrow(controls), nrow(TCR)),]
-    cdr3 <- chainCheck(chain)[[1]]
-    con2 <- pbmc[pbmc[,cdr3] %in% con$Var1,]
-    lc_con <- localConvergence(con2, chain = "TCRB")
-    lc_con <- checkVgenes(gc_con, con)
-    y <- nrow(lc_con)
-}
-
-bootstrap_LV <- mclapply(1:1000, sampleControl_gc, mc.cores = 3)
-
+#Filter out motifs based on p-value and fold-change
+table <- table[table$p <= 0.001 & table$fc > 5,]
+positions_motif <- positions_motif[positions_motif$spec.Motif %in% table$Var1,]
 ```
 
 
@@ -100,7 +101,7 @@ bootstrap_LV <- mclapply(1:1000, sampleControl_gc, mc.cores = 3)
 library(ggraph)
 library(igraph)
 
-edges <- rbind.data.frame(positions_LV, positions_motif)
+edges <- rbind.data.frame(positions_LV, positions_motif[,c(1,2,4)])
 edges <- checkVgenes(edges, TCR)
 vertices <- as.data.frame(TCR$Var1)
 
