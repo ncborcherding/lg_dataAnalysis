@@ -64,6 +64,7 @@ calculateConvergence <- function(combined, chain = "TCRB", group = NULL,
   controls <- getTCR(pbmc, "TCRB")
   
   for (x in seq_along(tmp.list)) {
+    le <- x
     tmp <- tmp.list[[x]]
     TCR <- getTCR(tmp, chain)
     message(paste("Calculating Global Convergence in:", names(tmp.list)[x]))
@@ -102,7 +103,7 @@ calculateConvergence <- function(combined, chain = "TCRB", group = NULL,
 
     clusters <- components(g, mode = "strong")
     membership <- data.frame(cdr3 = names(clusters$membership), TCRcluster = clusters$membership)
-    membership$TCRcluster <- paste0(names(tmp.list)[x], "_", membership$TCRcluster)
+    membership$TCRcluster <- paste0(names(tmp.list)[le], "_", membership$TCRcluster)
     membership <- merge(membership, TCR, by.x = "cdr3", by.y = "Var1")
     
     motifs <- positions_motif %>% 
@@ -110,7 +111,7 @@ calculateConvergence <- function(combined, chain = "TCRB", group = NULL,
         summarise(filtered.motifs = paste(unique(spec.Motif), collapse = ','))
     membership <- merge(membership, motifs, by.x = "cdr3", by.y = "To")
     tmp <- merge(tmp, membership, by.x = chainCheck(chain)[[1]], by.y = "cdr3")
-    tmp.list[[x]] <- tmp
+    tmp.list[[le]] <- tmp
   }
   return(tmp.list)
 }
