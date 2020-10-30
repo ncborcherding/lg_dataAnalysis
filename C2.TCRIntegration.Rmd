@@ -96,11 +96,9 @@ calculateConvergence <- function(combined, chain = "TCRB", group = NULL,
     table <- table[table$p <= p.value.motif & table$fc >= fc.motif,]
     positions_motif <- positions_motif[positions_motif$spec.Motif %in% table$Var1,]
     edges <- rbind.data.frame(positions_LV, positions_motif[,c(1,2,4)])
-    vertices <- as.data.frame(TCR$Var1)
+    vertices <- unique(as.data.frame(TCR$Var1))
     
     g = graph_from_data_frame(edges, directed = FALSE, vertices = vertices)
-    lou <- components(g, mode = "weak")
-    test <- as.data.frame(table(lou$membership))
 
     clusters <- components(g, mode = "strong")
     membership <- data.frame(cdr3 = names(clusters$membership), TCRcluster = clusters$membership)
