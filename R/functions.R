@@ -32,9 +32,9 @@ checkVgenes <- function(positions, TCR) {
     for (i in seq_len(nrow(positions))) {
         a <- positions[i,"To"]
         b <- positions[i,"From"]
-        x <- TCR[which(TCR[,"Var1"] == a), "vgene"]
-        y <- TCR[which(TCR[,"Var1"] == b), "vgene"]
-        if (x[1] == y[1]) {
+        d <- TCR[which(TCR[,"Var1"] == a), "vgene"]
+        e <- TCR[which(TCR[,"Var1"] == b), "vgene"]
+        if (d[1] == e[1]) {
             next()
         } else {
             count <- c(count,i)
