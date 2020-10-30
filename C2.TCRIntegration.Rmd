@@ -6,6 +6,11 @@ output: html_document
 ---
 ```{r}
 library(scRepertoire)
+library(stringr)
+library(stringdist)
+library(parallel)
+library(pbmcapply)
+
 source("./R/functions.R")
 setwd("~/Documents/GitHub/lg_dataAnalysis")
 
@@ -47,170 +52,138 @@ for (i in seq_along(combined)) {
 combined <- addVariable(combined, "Patient", c("Pt1", "Pt2", "Pt3", "Pt4", "Pt5", "Pt6", "Pt1", "Pt2", "Pt3", "Pt1", "Pt2", "Pt3", "Pt4", "Pt5", "Pt6"))
 ```
 
-* Check AA motifs for position along cdr3 - i.e. what is 10x Cell Ranger providing?
-* bootstrap comparison of LV of random TCR in plasma healthy to results, take lowest global similarity and compare
-    * filter is just < 2 efit distance
-* bootstrap comparison of motif results of random TCR in plasma healthy to results
-    * filter <- enrichment in group vs comparison > 10-fold
-    * filter <- probability < 0.001
-* additional filter with checkVgenes
+
     
 ```{r}
-calculateConvergence <- function(combined, chain = "TCRB", group = NULL, 
-                          motif.length = 3, num.cores =2, boot.straps = 1000, 
-                          p.value.motif = 0.001, fc.motif = 5) {
-  tmp.list <- parsingContigList(combined, group = group)
-  load("./data/pbmcControls.rda")
-  controls <- getTCR(pbmc, "TCRB")
-  
-  for (x in seq_along(tmp.list)) {
-    le <- x
-    tmp <- tmp.list[[x]]
-    TCR <- getTCR(tmp, chain)
-    message(paste("Calculating Global Convergence in:", names(tmp.list)[x]))
-    positions_LV <- globalConvergence(tmp, chain = chain)
-    positions_LV <- checkVgenes(positions_LV, TCR)
-    message(paste("Calculating Local Convergence in:", names(tmp.list)[x]))
-    positions_motif <- localConvergence(tmp, chain = chain, motif.length=motif.length)
-    
-    message(paste("Bootstrapping Random Global Convergence in:", names(tmp.list)[x]))
-    bootstrap_gc <- pbmclapply(1:boot.straps, sampleControl_gc, mc.cores = num.cores)
-    message(paste("Bootstrapping Random Local Convergence in:", names(tmp.list)[x]))
-    bootstrap_lc <- pbmclapply(1:boot.straps, sampleControl_lc, mc.cores = num.cores)
-    
-    message(paste("Filtering Bootstrapped Local Convergence in:", names(tmp.list)[x]))
-    #Make single data frame of motifs in bootstrap values
-    x <- lapply(bootstrap_lc, function(x){data.frame(x)})
-    df <- suppressWarnings(Reduce(function(x, y) merge(x=x, y=y, by="Var1", all.x=T, all.y=T), x))
-    df[is.na(df)] <- 0
-
-    ##for each motif, calculate p-value and fold-change
-    table <- as.data.frame(table(positions_motif$spec.Motif))
-
-    for (i in seq_len(nrow(table))) {
-      vector <- df[table[,"Var1"][i], 2:ncol(df)]
-      number <- table[i,"Freq"]
-      table$p[i] <- length(vector[vector >= number])/length(vector)
-      table$fc[i] <- number/median(as.numeric(vector))
-    }
-    #Filter out motifs based on p-value and fold-change
-    table <- table[table$p <= p.value.motif & table$fc >= fc.motif,]
-    positions_motif <- positions_motif[positions_motif$spec.Motif %in% table$Var1,]
-    edges <- rbind.data.frame(positions_LV, positions_motif[,c(1,2,4)])
-    vertices <- unique(as.data.frame(TCR$Var1))
-    
-    g = graph_from_data_frame(edges, directed = FALSE, vertices = vertices)
-
-    clusters <- components(g, mode = "strong")
-    membership <- data.frame(cdr3 = names(clusters$membership), TCRcluster = clusters$membership)
-    membership$TCRcluster <- paste0(names(tmp.list)[le], "_", membership$TCRcluster)
-    membership <- merge(membership, TCR, by.x = "cdr3", by.y = "Var1")
-    
-    motifs <- positions_motif %>% 
-        group_by(To) %>% 
-        summarise(filtered.motifs = paste(unique(spec.Motif), collapse = ','))
-    membership <- merge(membership, motifs, by.x = "cdr3", by.y = "To")
-    tmp <- merge(tmp, membership, by.x = chainCheck(chain)[[1]], by.y = "cdr3")
-    tmp.list[[le]] <- tmp
-  }
-  return(tmp.list)
-}
-
 testRun <- calculateConvergence(combined, chain = "TCRB", group = "Patient", 
                           motif.length = 3, num.cores =3, boot.straps = 1000, 
                           p.value.motif = 0.001, fc.motif = 5)
 ```
 
 ```{r}
-data <- data.frame(foo=c(1, 1, 2, 3, 3, 3), bar=c('a', 'b', 'a', 'b', 'c', 'd'),
-stringsAsFactors = FALSE)
+y <- tmp$cdr3_aa2
+y <- unique(y)
+align <-  msa(y, type = "protein", gapOpening = 15)
+align2 <- msaConvert(align, type="ape::AAbin")
 
-library("dplyr")
-library(purrr)
-p <- function(v) {
-  Reduce(f=paste, x = v)
- }
+y <- as.AAbin.character(y, j = length(y))
+df <- data.frame(cdr3 = y, scaled.distance = dist.aa(align2, scaled = TRUE))
+z <- dist.aa(align2, scaled = TRUE)
+test <- bind_rows(testRun)
 
-
-
-motifs <- positions_motif %>% 
-  group_by(To) %>% 
-  mutate(filtered_motifs=p(spec.Motif))
-
-
+data(woodmouse)
+AA <- trans(woodmouse, 2)
 ```
 
-```{r}
-library(stringr)
-library(stringdist)
-library(parallel)
-library(pbmcapply)
+GLIPH then scores each individual cluster (candidate convergence group) by evaluating a
+set of features that are independet of the CDR3 observations, assigning a probability 
+p to each feature, and then combining those probabilities into a single score by conflation. 
+
+For tests i through N, testing Pi(X=C) probability that cluster X is convergent, the combined
+conflation score is given as
+
+                      __N
+P(X=C) =              ||  P (X=C)
+                        i  i
+           ----------------------------
+            __N             __N
+            ||  P (X=C)  +  ||  P (X!=C)
+              i  i            i  i
+
+The individual Pi(X=C) tests include 
+
+1) global similarity probability
+2) local motif probability
+3) network size
+4) enrichment of V-gene within cluster
+5) enrichment of CDR3 length (spectratype) within cluster
+6) enrichment of clonal expansion within cluster
+7) enrichment of common HLA among donor TCR contributors in cluster 
+
+Individual score components are calculated as follows:
+
+== 3) Calculating network size p ==
+
+For each discrete cluster, the probability p of a given cluster topology can be 
+obtained from the number of members of the cluster by comparison to a lookup table 
+calculated from repeat random sampling and GLIPH clustering of naive TCR sequences 
+at a range of different sampling depths n from 25 to 5000, each performed 1000 times 
+each. 
+
+Example: at sampling depth n=500, clusters of size 5 have a probabilty p=0.002 of occuring
+in naive TCR sample sets.
+
+== 4) enrichment of V-gene within cluster ==
+
+GLIPH hides V-gene usage for all clones prior to CDR3 analysis, and does not explore the
+V-gene template endcoded amino acids in the local (motif) search. 
+
+To evaluate whether there is an enrichment of common V-segment within the cluster over
+the degree that would be expected from an unbiased sampling of TCRs of cluster size n
+from the total dataset, we perform repeat random sampling at sample size n from the
+total dataset, each time obtaining the V-genes for each clone and calculating a 
+ V-gene Simpson's Diversity Index D for each sample, where D is interpreted as the probability
+that any two members within the cluster would share a V-gene and is calculated as
+
+      __V
+     \   v(v-1)
+     /__1
+D = -----------
+      __V
+     \   n(n-1)
+     /__1
+
+where V is the number of all V-genes, v is the total counts of a given v-gene, and n 
+is the sampling size (cluster size). 
+ 
+The probability of the observed D for candidate convergence group is obtained as the 
+one-tailed probability of observing a score at least that high in the D score distribution
+from random sampled clusters of same size n.
+
+== 4) enrichment of CDR3 within cluster ==
+
+For local (motif) scoring, no stratification based on CDR3 length is performed. 
+
+To evaluate whether there is an enrichment of common CDR3 length within the cluster over
+the degree that would be expected from an unbiased sampling of TCRs of cluster size n
+from the total dataset, we perform repeat random sampling at sample size n from the
+total dataset, each time obtaining the CDR3 lengths for each clone and calculating a
+ V-gene Simpson's Diversity Index D for each sample, where D is interpreted as the probability
+that any two members within the cluster would share a CDR3length and is calculated as
+
+      __C
+     \   c(c-1)
+     /__1
+D = -----------
+      __C
+     \   n(n-1)
+     /__1
+
+where C is the number of all CDR3 lengths, c is the total counts of a given CDR3 length, 
+and n is the sampling size (cluster size).
+
+The probability of the observed D for candidate convergence group is obtained as the
+one-tailed probability of observing a score at least that high in the D score distribution
+from random sampled clusters of same size n.
 
 
+== 5) enrichment of clonal expansion within cluster ==
 
-tmp <- combined[[15]]
-TCR <- getTCR(tmp, "TCRB")
-positions_LV <- globalConvergence(tmp, chain = "TCRB")
-positions_LV <- checkVgenes(positions_LV, TCR)
-positions_motif <- localConvergence(tmp, chain = "TCRB", motif.length=3)
+The first step in GLIPH is to make all CDR3s non-redundant, hiding their clone frequences.
+To evaluate whether there is an enrichment of expanded clones within a given convergence
+group, the number of counts for each clone are recovered, and a convergence group expansion
+coefficient e is calculated as
 
+e = total clones / total unique clones
 
-load("./data/pbmcControls.rda")
-controls <- getTCR(pbmc, "TCRB")
+To evaluate whether there is an enrichment of expanded clones within the cluster over
+the degree that would be expected from an unbiased sampling of TCRs of cluster size n
+from the total dataset, we perform repeat random sampling at sample size n from the
+total dataset, each time obtaining the clone counts for each clone and calculating e
+for each random sample to establish a distribution. 
 
-##################################################
-##Will error without chain saved to the environment
-#################################################
-
-bootstrap_gc <- pbmclapply(1:1000, sampleControl_gc, mc.cores = 3)
-bootstrap_lc <- pbmclapply(1:1000, sampleControl_lc, mc.cores = 3)
-
-#Make single data frame of motifs in bootstrap values
-x <- lapply(bootstrap_lc, function(x){data.frame(x)})
-df <- Reduce(function(x, y) merge(x=x, y=y, by="Var1", all.x=T, all.y=T), x)
-df[is.na(df)] <- 0
-
-##for each motif, calculate p-value and fold-change
-table <- as.data.frame(table(positions_motif$spec.Motif))
-
-for (i in seq_len(nrow(table))) {
-  vector <- df[table[,"Var1"][i], 2:ncol(df)]
-  number <- table[i,"Freq"]
-  table$p[i] <- length(vector[vector >= number])/length(vector)
-  table$fc[i] <- number/median(as.numeric(vector))
-}
-#Filter out motifs based on p-value and fold-change
-table <- table[table$p <= 0.001 & table$fc > 5,]
-positions_motif <- positions_motif[positions_motif$spec.Motif %in% table$Var1,]
-```
+The probability of the observed e for candidate convergence group is obtained as the
+one-tailed probability of observing a score at least that high in the e score distribution
+from random sampled clusters of same size n.
 
 
-```{r}
-library(ggraph)
-library(igraph)
-
-edges <- rbind.data.frame(positions_LV, positions_motif[,c(1,2,4)])
-edges <- checkVgenes(edges, TCR)
-vertices <- unique(as.data.frame(TCR$Var1))
-
-
-
-g = graph_from_data_frame(edges, directed = FALSE, vertices = vertices)
-lou <- components(g, mode = "weak")
-test <- as.data.frame(table(lou$membership))
-
-clusters <- components(g, mode = "strong")
-membership <- data.frame(cdr3 = names(clusters$membership), TCRcluster = clusters$membership)
-membership$TCRcluster <- paste0(names(tmp.list)[x], "_", membership$TCRcluster)
-
-plot(g, vertex.label = NA, vertex.color=rainbow(46, alpha=0.6)[lou$membership])
-```
-
-```{r}
-ggraph(g) +
-  geom_edge_link(show.legend = FALSE, aes(color = "Type")) +
-  geom_node_point()  +
-  theme_graph()
-
-plot
-```

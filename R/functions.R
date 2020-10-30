@@ -175,3 +175,75 @@ parsingContigList <- function(combined, group = NULL) {
     group.list <- split(tmp, f = tmp[,group])
     return(group.list)
 }
+
+#Function to calculate local and global convergence over contig information
+#processed by scRepertoire. Will call T cell clusters by local and global
+#convergence
+
+#combined is the object from combineTCR()
+#chain is either TCRB or TCRA
+#group is how to calculate convergence, if null, will calculate across each sample/list element
+#motif.length The window to evaluate amino acide motifs
+#num.cores how many cores to use during the bootstrapping process
+#boot.straps the number of bootstraps to calculate
+#fc.motif the fold-change cut off for the motif/local convergence analysis
+#p.value.motif the one-side p-value cut-off for the motif/local convergence analysis
+calculateConvergence <- function(combined, chain = "TCRB", group = NULL, 
+                                 motif.length = 3, num.cores =2, boot.straps = 1000, 
+                                 p.value.motif = 0.001, fc.motif = 5) {
+    tmp.list <- parsingContigList(combined, group = group)
+    load("./data/pbmcControls.rda")
+    controls <- getTCR(pbmc, "TCRB")
+    
+    for (x in seq_along(tmp.list)) {
+        le <- x
+        tmp <- tmp.list[[x]]
+        TCR <- getTCR(tmp, chain)
+        message(paste("Calculating Global Convergence in:", names(tmp.list)[x]))
+        positions_LV <- globalConvergence(tmp, chain = chain)
+        positions_LV <- checkVgenes(positions_LV, TCR)
+        message(paste("Calculating Local Convergence in:", names(tmp.list)[x]))
+        positions_motif <- localConvergence(tmp, chain = chain, motif.length=motif.length)
+        
+        message(paste("Bootstrapping Random Global Convergence in:", names(tmp.list)[x]))
+        bootstrap_gc <- pbmclapply(1:boot.straps, sampleControl_gc, mc.cores = num.cores)
+        message(paste("Bootstrapping Random Local Convergence in:", names(tmp.list)[x]))
+        bootstrap_lc <- pbmclapply(1:boot.straps, sampleControl_lc, mc.cores = num.cores)
+        
+        message(paste("Filtering Bootstrapped Local Convergence in:", names(tmp.list)[x]))
+        #Make single data frame of motifs in bootstrap values
+        x <- lapply(bootstrap_lc, function(x){data.frame(x)})
+        df <- suppressWarnings(Reduce(function(x, y) merge(x=x, y=y, by="Var1", all.x=T, all.y=T), x))
+        df[is.na(df)] <- 0
+        
+        ##for each motif, calculate p-value and fold-change
+        table <- as.data.frame(table(positions_motif$spec.Motif))
+        
+        for (i in seq_len(nrow(table))) {
+            vector <- df[table[,"Var1"][i], 2:ncol(df)]
+            number <- table[i,"Freq"]
+            table$p[i] <- length(vector[vector >= number])/length(vector)
+            table$fc[i] <- number/median(as.numeric(vector))
+        }
+        #Filter out motifs based on p-value and fold-change
+        table <- table[table$p <= p.value.motif & table$fc >= fc.motif,]
+        positions_motif <- positions_motif[positions_motif$spec.Motif %in% table$Var1,]
+        edges <- rbind.data.frame(positions_LV, positions_motif[,c(1,2,4)])
+        vertices <- unique(as.data.frame(TCR$Var1))
+        
+        g = graph_from_data_frame(edges, directed = FALSE, vertices = vertices)
+        
+        clusters <- components(g, mode = "strong")
+        membership <- data.frame(cdr3 = names(clusters$membership), TCRcluster = clusters$membership)
+        membership$TCRcluster <- paste0(names(tmp.list)[le], "_", membership$TCRcluster)
+        membership <- merge(membership, TCR, by.x = "cdr3", by.y = "Var1")
+        
+        motifs <- positions_motif %>% 
+            group_by(To) %>% 
+            suppressMessages(summarise(filtered.motifs = paste(unique(spec.Motif), collapse = ',')))
+        membership <- merge(membership, motifs, by.x = "cdr3", by.y = "To")
+        tmp <- merge(tmp, membership, by.x = chainCheck(chain)[[1]], by.y = "cdr3")
+        tmp.list[[le]] <- tmp
+    }
+    return(tmp.list)
+}
