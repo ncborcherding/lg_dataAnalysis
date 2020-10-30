@@ -34,7 +34,7 @@ checkVgenes <- function(positions, TCR) {
         b <- positions[i,"From"]
         x <- TCR[which(TCR[,"Var1"] == a), "vgene"]
         y <- TCR[which(TCR[,"Var1"] == b), "vgene"]
-        if (x == y) {
+        if (x[1] == y[1]) {
             next()
         } else {
             count <- c(count,i)
@@ -98,7 +98,7 @@ getTCR <- function(tmp, chain) {
     return(TCR)
 }
 
-localConvergence <- function(tmp, chain = "TCRB", motif.length = 3, filter.0 =TRUE) {
+localConvergence <- function(tmp, chain = "TCRB", motif.length = 3) {
     load("./data/AA_combinations.rda")
     TCR <- getTCR(tmp,chain)
     positions <- NULL
@@ -121,9 +121,8 @@ localConvergence <- function(tmp, chain = "TCRB", motif.length = 3, filter.0 =TR
                 }
             }
         }
-    if (filter.0 == TRUE) {
-        out[out == 0] <- NA
-    }
+
+    out[out == 0] <- NA
     positions_motif <- getPostitions(out, 0,9)
     motifs <- unique(positions_motif[,2])
     df.edge <- NULL
@@ -147,6 +146,7 @@ localConvergence <- function(tmp, chain = "TCRB", motif.length = 3, filter.0 =TR
     return(positions)
 }
 
+# for bootstrapping the global convergence
 sampleControl_gc <- function(i) {
     con <- controls[sample(nrow(controls), nrow(TCR)),]
     cdr3 <- chainCheck(chain)[[1]]
@@ -156,11 +156,22 @@ sampleControl_gc <- function(i) {
     y <- nrow(gc_con)
 }
 
+# for bootstrapping the local convergence
 sampleControl_lc <- function(i) {
     con <- controls[sample(nrow(controls), nrow(TCR)),]
     cdr3 <- chainCheck(chain)[[1]]
     con2 <- pbmc[pbmc[,cdr3] %in% con$Var1,]
-    lc_con <- localConvergence(con2, chain = "TCRB", filter.0 = FALSE)
+    lc_con <- localConvergence(con2, chain = "TCRB")
     y <- unlist(table(lc_con$spec.Motif))
     return(y)
+}
+
+# reorganization of the combined list from scRepertoire
+parsingContigList <- function(combined, group = NULL) {
+    if (is.null(group)) {
+        group <- "sample"
+    }
+    tmp <- bind_rows(combined)
+    group.list <- split(tmp, f = tmp[,group])
+    return(group.list)
 }
