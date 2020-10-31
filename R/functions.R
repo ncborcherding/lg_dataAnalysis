@@ -63,12 +63,14 @@ chainCheck <- function(chain)  {
 # eliminating the interactions that do not share the same Vgene. Returning
 # a relational data frame without redundancy.
 
-# Chain specifies which chain to pull the information from
-globalConvergence <- function(tmp, chain = "TCRB") {
+# chain specifies which chain to pull the information from
+# edit.distance is the cut.off for levenshtein distance to be taken 
+# into account for clustering
+globalConvergence <- function(tmp, chain = "TCRB", edit.distance = NULL) {
     
     TCR <- getTCR(tmp, chain)
     TCR_dist <- as.matrix(stringdistmatrix(TCR$Var1, method = "lv"))
-    TCR_dist[TCR_dist >= 2] <- NA
+    TCR_dist[TCR_dist >= 1+edit.distance] <- NA
     for (i in seq_len(ncol(TCR_dist))) {
         TCR_dist[i,i] <- NA
     }
@@ -151,7 +153,7 @@ sampleControl_gc <- function(i) {
     con <- controls[sample(nrow(controls), nrow(TCR)),]
     cdr3 <- chainCheck(chain)[[1]]
     con2 <- pbmc[pbmc[,cdr3] %in% con$Var1,]
-    gc_con <- globalConvergence(con2, chain = "TCRB")
+    gc_con <- globalConvergence(con2, chain = "TCRB", edit.distance = edit.distance)
     gc_con <- checkVgenes(gc_con, con)
     y <- nrow(gc_con)
 }
@@ -186,21 +188,25 @@ parsingContigList <- function(combined, group = NULL) {
 #motif.length The window to evaluate amino acide motifs
 #num.cores how many cores to use during the bootstrapping process
 #boot.straps the number of bootstraps to calculate
+#edit.distance is the cut.off for levenshtein distance to be taken 
+# into account for clustering
 #fc.motif the fold-change cut off for the motif/local convergence analysis
 #p.value.motif the one-side p-value cut-off for the motif/local convergence analysis
 calculateConvergence <- function(combined, chain = "TCRB", group = NULL, 
                                  motif.length = 3, num.cores =2, boot.straps = 1000, 
-                                 p.value.motif = 0.001, fc.motif = 5) {
+                                 edit.distance = 1, p.value.motif = 0.001, fc.motif = 5) {
     tmp.list <- parsingContigList(combined, group = group)
     load("./data/pbmcControls.rda")
     controls <- getTCR(pbmc, "TCRB")
-    
+    new.list <- list()
     for (x in seq_along(tmp.list)) {
         le <- x
+        
         tmp <- tmp.list[[x]]
         TCR <- getTCR(tmp, chain)
         message(paste("Calculating Global Convergence in:", names(tmp.list)[x]))
-        positions_LV <- globalConvergence(tmp, chain = chain)
+        positions_LV <- globalConvergence(tmp, chain = chain, edit.distance = edit.ditance)
+        TCR_dist <- as.matrix(stringdistmatrix(TCR$Var1, method = "lv"))
         positions_LV <- checkVgenes(positions_LV, TCR)
         message(paste("Calculating Local Convergence in:", names(tmp.list)[x]))
         positions_motif <- localConvergence(tmp, chain = chain, motif.length=motif.length)
@@ -243,7 +249,8 @@ calculateConvergence <- function(combined, chain = "TCRB", group = NULL,
             suppressMessages(summarise(filtered.motifs = paste(unique(spec.Motif), collapse = ',')))
         membership <- merge(membership, motifs, by.x = "cdr3", by.y = "To")
         tmp <- merge(tmp, membership, by.x = chainCheck(chain)[[1]], by.y = "cdr3")
-        tmp.list[[le]] <- tmp
+        new.list[[le]] <- list(contigs = tmp, edit.distances = TCR_dist)
     }
-    return(tmp.list)
+    names(new.list) <- names(tmp.list)
+    return(new.list)
 }
