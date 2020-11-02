@@ -196,7 +196,8 @@ parsingContigList <- function(combined, group = NULL) {
 #p.value.motif the one-side p-value cut-off for the motif/local convergence analysis
 calculateConvergence <- function(combined, chain = "TCRB", group = NULL, 
                                  motif.length = 3, num.cores =2, boot.straps = 1000, 
-                                 edit.distance = 1, p.value.motif = 0.001, fc.motif = 5) {
+                                 edit.distance = 1, p.value.motif = 0.001, fc.motif = 5
+                                 score.cluster = NULL) {
     tmp.list <- parsingContigList(combined, group = group)
     load("./data/pbmcControls.rda")
     controls <- getTCR(pbmc, "TCRB")
@@ -265,6 +266,10 @@ calculateConvergence <- function(combined, chain = "TCRB", group = NULL,
         new.list[[le]] <- list(contigs = tmp, edit.distances = TCR_dist)
     }
     names(new.list) <- names(tmp.list)
+    if (score.cluster == TRUE) {
+        message(paste("Calculating Cluster Probabilities", names(tmp.list)[x]))s
+        new.list <- scoreCluster(new.list)
+    }
     return(new.list)
 }
 
@@ -294,7 +299,58 @@ freq.perm <- function(i) {
 }
 
 probabilityFun <- function(raw, perm) {
-    prob <- length(perm[perm > raw])/ length(perm)
+    prob <- length(perm[perm >= raw])/ length(perm)
     return(prob)
+    
+}
+
+
+scoreCluster <- function(convergence) {
+    out <- NULL
+    for (i in seq_along(convergence)) {
+        tmp <- convergence[[i]][[1]]
+        cluster <- unique(tmp$TCRcluster)
+        for (j in seq_along(cluster)) {
+            sub <- tmp[tmp$TCRcluster == cluster,]
+            
+            #Probability of randomly length diversity
+            #somewhat biased because of the selection of vgenes
+            vgene.diversity <- vgeneDiversity(sub)
+            vgene.diversity.perm <- unlist(lapply(1:1000, vgeneDiversity.perm))
+            pVgene <- probabilityFun(vgene.diversity, vgene.diversity.perm)
+            
+            #Probability of randomly length diversity
+            length.diversity <- diversity(sub[,"length"], index = "simpson")
+            length.diversity.perm <- unlist(lapply(1:1000, vgeneDiversity.perm))
+            pLength <- probabilityFun(length.diversity, length.diversity.perm)
+            
+            #Probability of randomly sampled frequences
+            freq.size <-  length(unique(names(table(sub[,cdr3]))))/nrow(sub)
+            freq.size.perm <- unlist(lapply(1:1000, freq.perm))
+            pFreq <- probabilityFun(freq.size, freq.size.perm)
+            
+            #mean motif p-values for cluster
+            pLC <- mean(sub[,ncol(sub)])
+            
+            #probability of global similarity
+            pGC <- probabilityFun(nrow(positions_LV), unlist(bootstrap_gc))
+            
+            if(any(list(pVgene, pLength, pFreq, pLC, pGC) == 0)) {
+                vars <- which(list(pVgene, pLength, pFreq, pLC, pGC) == 0)
+                for (k in vars) {
+                    p <- list(pVgene, pLength, pFreq, pLC, pGC)[[k]] 
+                    varia <- c("pVgene", "pLength", "pFreq", "pLC", "pGC")[k] 
+                    p <- 0.001
+                    assign(varia, p)
+                }
+            }
+            prob <- (pLC * pGC * pVgene *pLength * pFreq) / 
+                ((pLC * pGC * pVgene *pLength * pFreq) + 
+                     ((1-pLC) * (1-pGC) * (1-pVgene) * (1-pLength) * (1-pFreq)))
+        }
+        sub$Cluster.Enrichment <- prob
+        out <- rbind(out, sub)    
+    }
+    convergence[[i]][[1]] <- out
     
 }

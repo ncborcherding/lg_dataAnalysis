@@ -10,6 +10,7 @@ library(stringr)
 library(stringdist)
 library(parallel)
 library(pbmcapply)
+library(vegan)
 
 source("./R/functions.R")
 setwd("~/Documents/GitHub/lg_dataAnalysis")
@@ -65,66 +66,10 @@ Need to add 1) cluster size probability
 
 Think on the global and local convergence p-values
 
-```{r}
-library(vegan)
-message(paste("Calculating Cluster Probabilities", names(tmp.list)[x]))
-scoreCluster <- function(convergence) {
-    for (i in seq_along(convergence)) {
-    tmp <- convergence[[i]][[1]]
-    cluster <- unique(tmp$TCRcluster)
-        for (j in seq_along(cluster)) {
-            sub <- tmp[tmp$TCRcluster == cluster,]
-            
-            #Probability of randomly length diversity
-            #somewhat biased because of the selection of vgenes
-            vgene.diversity <- vgeneDiversity(sub)
-            vgene.diversity.perm <- unlist(lapply(1:1000, vgeneDiversity.perm))
-            pVgene <- probabilityFun(vgene.diversity, vgene.diversity.perm)
-            
-            #Probability of randomly length diversity
-            length.diversity <- diversity(sub[,"length"], index = "simpson")
-            length.diversity.perm <- unlist(lapply(1:1000, vgeneDiversity.perm))
-            pLength <- probabilityFun(length.diversity, length.diversity.perm)
-            
-            #Probability of randomly sampled frequences
-            freq.size <-  length(unique(names(table(sub[,cdr3]))))/nrow(sub)
-            freq.size.perm <- unlist(lapply(1:1000, freq.perm))
-            pFreq <- probabilityFun(freq.size, freq.size.perm)
-            
-            #mean motif p-values for cluster
-            ####May need to rethink this
-            pLC <- mean(sub[,ncol(sub)])
-            
-            #probability of global similarity
-            ####May need to rethink this
-            pGC <- probabilityFun(nrow(positions_LV), unlist(bootstrap_gc))
-            
-            if(any(list(pVgene, pLength, pFreq, pLC, pGC) == 0)) {
-                vars <- which(list(pVgene, pLength, pFreq, pLC, pGC) == 0)
-                for (k in vars) {
-                    p <- list(pVgene, pLength, pFreq, pLC, pGC)[[k]] 
-                    varia <- c("pVgene", "pLength", "pFreq", "pLC", "pGC")[k] 
-                    p <- 0.001
-                    assign(varia, p)
-                }
-            }
-            prob <- (pLC * pGC * pVgene *pLength * pFreq) / 
-                ((pLC * pGC * pVgene *pLength * pFreq) + 
-                ((1-pLC) * (1-pGC) * (1-pVgene) * (1-pLength) * (1-pFreq)))
-        }
-        
-    }
-    
-}
-```
 
 
-```{r}
-x <- rawToChar(as.raw(177))
-x
-strtoi(as.strin sub[,"vgene"],) # Polish "a with ogonek"
-str_conv(x, "ISO-8859-1") # Plus-minus
-```
+
+
 
 ```{r}
 y <- tmp$cdr3_aa2
