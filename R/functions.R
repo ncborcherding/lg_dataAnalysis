@@ -196,7 +196,7 @@ parsingContigList <- function(combined, group = NULL) {
 #p.value.motif the one-side p-value cut-off for the motif/local convergence analysis
 calculateConvergence <- function(combined, chain = "TCRB", group = NULL, 
                                  motif.length = 3, num.cores =2, boot.straps = 1000, 
-                                 edit.distance = 1, p.value.motif = 0.001, fc.motif = 5
+                                 edit.distance = 1, p.value.motif = 0.001, fc.motif = 5,
                                  score.cluster = NULL) {
     tmp.list <- parsingContigList(combined, group = group)
     load("./data/pbmcControls.rda")
@@ -267,7 +267,7 @@ calculateConvergence <- function(combined, chain = "TCRB", group = NULL,
     }
     names(new.list) <- names(tmp.list)
     if (score.cluster == TRUE) {
-        message(paste("Calculating Cluster Probabilities", names(tmp.list)[x]))s
+        message(paste("Calculating Cluster Probabilities", names(tmp.list)[x]))
         new.list <- scoreCluster(new.list)
     }
     return(new.list)
