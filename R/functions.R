@@ -178,6 +178,8 @@ parsingContigList <- function(combined, group = NULL) {
     return(group.list)
 }
 
+
+
 #Function to calculate local and global convergence over contig information
 #processed by scRepertoire. Will call T cell clusters by local and global
 #convergence
@@ -205,7 +207,7 @@ calculateConvergence <- function(combined, chain = "TCRB", group = NULL,
         tmp <- tmp.list[[x]]
         TCR <- getTCR(tmp, chain)
         message(paste("Calculating Global Convergence in:", names(tmp.list)[x]))
-        positions_LV <- globalConvergence(tmp, chain = chain, edit.distance = edit.ditance)
+        positions_LV <- globalConvergence(tmp, chain = chain, edit.distance = edit.distance)
         TCR_dist <- as.matrix(stringdistmatrix(TCR$Var1, method = "lv"))
         positions_LV <- checkVgenes(positions_LV, TCR)
         message(paste("Calculating Local Convergence in:", names(tmp.list)[x]))
@@ -213,6 +215,7 @@ calculateConvergence <- function(combined, chain = "TCRB", group = NULL,
         
         message(paste("Bootstrapping Random Global Convergence in:", names(tmp.list)[x]))
         bootstrap_gc <- pbmclapply(1:boot.straps, sampleControl_gc, mc.cores = num.cores)
+        
         message(paste("Bootstrapping Random Local Convergence in:", names(tmp.list)[x]))
         bootstrap_lc <- pbmclapply(1:boot.straps, sampleControl_lc, mc.cores = num.cores)
         
@@ -246,11 +249,52 @@ calculateConvergence <- function(combined, chain = "TCRB", group = NULL,
         
         motifs <- positions_motif %>% 
             group_by(To) %>% 
-            suppressMessages(summarise(filtered.motifs = paste(unique(spec.Motif), collapse = ',')))
+            summarise(.groups = "keep", filtered.motifs = paste(unique(spec.Motif), collapse = ','))
+        names.motif <- unique(motifs$filtered.motifs) 
+        pLC <- NULL
+        for (i in seq_along(names.motif)) {
+            mot <- unlist(str_split(names.motif[i], ","))
+            sum <- sum(table[table$Var1 %in% mot,]$p)
+            pLC <- c(pLC, sum)
+        }
+        names(pLC) <- names.motif
+        pLC <- as.data.frame(pLC)
         membership <- merge(membership, motifs, by.x = "cdr3", by.y = "To")
+        membership <- merge(membership, pLC, by.x = "filtered.motifs", by.y = "row.names")
         tmp <- merge(tmp, membership, by.x = chainCheck(chain)[[1]], by.y = "cdr3")
         new.list[[le]] <- list(contigs = tmp, edit.distances = TCR_dist)
     }
     names(new.list) <- names(tmp.list)
     return(new.list)
+}
+
+vgeneDiversity <- function(sub) {
+    genes <- seq_len(length(unique(sub[,"vgene"])))
+    names(genes) <- unique(sub[,"vgene"])
+    vgenes <- genes[sub[,"vgene"]] 
+    vgene.diversity <- diversity(vgenes, index = "simpson")
+    return(vgene.diversity)
+}
+vgeneDiversity.perm <- function(i) {
+    cont.perm <- tmp[sample(nrow(tmp), nrow(sub)),]
+    diversity <- vgeneDiversity(cont.perm)
+    return(diversity)
+}
+
+length.perm <- function(i) {
+    cont.perm <- tmp[sample(nrow(tmp), nrow(sub)),]
+    diversity <- diversity(cont.perm[,"length"], index = "simpson")
+    return(diversity)
+}
+
+freq.perm <- function(i) {
+    cont.perm <- tmp[sample(nrow(tmp), nrow(sub)),]
+    max.freq <- length(unique(names(table(cont.perm$cdr3_aa2))))/nrow(sub)
+    return(max.freq)
+}
+
+probabilityFun <- function(raw, perm) {
+    prob <- length(perm[perm > raw])/ length(perm)
+    return(prob)
+    
 }

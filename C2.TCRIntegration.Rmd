@@ -57,7 +57,73 @@ combined <- addVariable(combined, "Patient", c("Pt1", "Pt2", "Pt3", "Pt4", "Pt5"
 ```{r}
 testRun <- calculateConvergence(combined, chain = "TCRB", group = "Patient", 
                           motif.length = 3, num.cores =3, boot.straps = 1000, 
-                          edit.distance = 1, p.value.motif = 0.001, fc.motif = 5)
+                          edit.distance = 1, p.value.motif = 0.005, fc.motif = 5)
+```
+
+
+Need to add 1) cluster size probability
+
+Think on the global and local convergence p-values
+
+```{r}
+library(vegan)
+message(paste("Calculating Cluster Probabilities", names(tmp.list)[x]))
+scoreCluster <- function(convergence) {
+    for (i in seq_along(convergence)) {
+    tmp <- convergence[[i]][[1]]
+    cluster <- unique(tmp$TCRcluster)
+        for (j in seq_along(cluster)) {
+            sub <- tmp[tmp$TCRcluster == cluster,]
+            
+            #Probability of randomly length diversity
+            #somewhat biased because of the selection of vgenes
+            vgene.diversity <- vgeneDiversity(sub)
+            vgene.diversity.perm <- unlist(lapply(1:1000, vgeneDiversity.perm))
+            pVgene <- probabilityFun(vgene.diversity, vgene.diversity.perm)
+            
+            #Probability of randomly length diversity
+            length.diversity <- diversity(sub[,"length"], index = "simpson")
+            length.diversity.perm <- unlist(lapply(1:1000, vgeneDiversity.perm))
+            pLength <- probabilityFun(length.diversity, length.diversity.perm)
+            
+            #Probability of randomly sampled frequences
+            freq.size <-  length(unique(names(table(sub[,cdr3]))))/nrow(sub)
+            freq.size.perm <- unlist(lapply(1:1000, freq.perm))
+            pFreq <- probabilityFun(freq.size, freq.size.perm)
+            
+            #mean motif p-values for cluster
+            ####May need to rethink this
+            pLC <- mean(sub[,ncol(sub)])
+            
+            #probability of global similarity
+            ####May need to rethink this
+            pGC <- probabilityFun(nrow(positions_LV), unlist(bootstrap_gc))
+            
+            if(any(list(pVgene, pLength, pFreq, pLC, pGC) == 0)) {
+                vars <- which(list(pVgene, pLength, pFreq, pLC, pGC) == 0)
+                for (k in vars) {
+                    p <- list(pVgene, pLength, pFreq, pLC, pGC)[[k]] 
+                    varia <- c("pVgene", "pLength", "pFreq", "pLC", "pGC")[k] 
+                    p <- 0.001
+                    assign(varia, p)
+                }
+            }
+            prob <- (pLC * pGC * pVgene *pLength * pFreq) / 
+                ((pLC * pGC * pVgene *pLength * pFreq) + 
+                ((1-pLC) * (1-pGC) * (1-pVgene) * (1-pLength) * (1-pFreq)))
+        }
+        
+    }
+    
+}
+```
+
+
+```{r}
+x <- rawToChar(as.raw(177))
+x
+strtoi(as.strin sub[,"vgene"],) # Polish "a with ogonek"
+str_conv(x, "ISO-8859-1") # Plus-minus
 ```
 
 ```{r}
@@ -112,78 +178,5 @@ each.
 
 Example: at sampling depth n=500, clusters of size 5 have a probabilty p=0.002 of occuring
 in naive TCR sample sets.
-
-== 4) enrichment of V-gene within cluster ==
-
-GLIPH hides V-gene usage for all clones prior to CDR3 analysis, and does not explore the
-V-gene template endcoded amino acids in the local (motif) search. 
-
-To evaluate whether there is an enrichment of common V-segment within the cluster over
-the degree that would be expected from an unbiased sampling of TCRs of cluster size n
-from the total dataset, we perform repeat random sampling at sample size n from the
-total dataset, each time obtaining the V-genes for each clone and calculating a 
- V-gene Simpson's Diversity Index D for each sample, where D is interpreted as the probability
-that any two members within the cluster would share a V-gene and is calculated as
-
-      __V
-     \   v(v-1)
-     /__1
-D = -----------
-      __V
-     \   n(n-1)
-     /__1
-
-where V is the number of all V-genes, v is the total counts of a given v-gene, and n 
-is the sampling size (cluster size). 
- 
-The probability of the observed D for candidate convergence group is obtained as the 
-one-tailed probability of observing a score at least that high in the D score distribution
-from random sampled clusters of same size n.
-
-== 4) enrichment of CDR3 within cluster ==
-
-For local (motif) scoring, no stratification based on CDR3 length is performed. 
-
-To evaluate whether there is an enrichment of common CDR3 length within the cluster over
-the degree that would be expected from an unbiased sampling of TCRs of cluster size n
-from the total dataset, we perform repeat random sampling at sample size n from the
-total dataset, each time obtaining the CDR3 lengths for each clone and calculating a
- V-gene Simpson's Diversity Index D for each sample, where D is interpreted as the probability
-that any two members within the cluster would share a CDR3length and is calculated as
-
-      __C
-     \   c(c-1)
-     /__1
-D = -----------
-      __C
-     \   n(n-1)
-     /__1
-
-where C is the number of all CDR3 lengths, c is the total counts of a given CDR3 length, 
-and n is the sampling size (cluster size).
-
-The probability of the observed D for candidate convergence group is obtained as the
-one-tailed probability of observing a score at least that high in the D score distribution
-from random sampled clusters of same size n.
-
-
-== 5) enrichment of clonal expansion within cluster ==
-
-The first step in GLIPH is to make all CDR3s non-redundant, hiding their clone frequences.
-To evaluate whether there is an enrichment of expanded clones within a given convergence
-group, the number of counts for each clone are recovered, and a convergence group expansion
-coefficient e is calculated as
-
-e = total clones / total unique clones
-
-To evaluate whether there is an enrichment of expanded clones within the cluster over
-the degree that would be expected from an unbiased sampling of TCRs of cluster size n
-from the total dataset, we perform repeat random sampling at sample size n from the
-total dataset, each time obtaining the clone counts for each clone and calculating e
-for each random sample to establish a distribution. 
-
-The probability of the observed e for candidate convergence group is obtained as the
-one-tailed probability of observing a score at least that high in the e score distribution
-from random sampled clusters of same size n.
 
 
