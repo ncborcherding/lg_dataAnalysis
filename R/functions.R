@@ -113,8 +113,10 @@ localConvergence <- function(tmp, chain = "TCRB", motif.length = 3) {
     
         for (i in seq_len(nrow(subset))) {
             tmp <- as.character(subset$Var1[i])
-            for (j in seq_len(nchar(tmp))) {
-                string <- substr(tmp, j, j+(motif.length-1))
+            index <- seq_len(nchar(tmp))
+            index <- index[-c(1,2,3, nchar(tmp)-1, nchar(tmp)-2, nchar(tmp)-3)]
+            for (j in index) {
+                string <- substr(tmp, j+3, j+(motif.length-1)+3)
                 if (string %in% AA_combinations & nchar(string) == motif.length) {
                     position <- which(colnames(out) == string)
                     out[i,position] <- out[i,position] + 1
