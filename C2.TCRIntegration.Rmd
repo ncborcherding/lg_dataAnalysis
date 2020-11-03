@@ -11,6 +11,7 @@ library(stringdist)
 library(parallel)
 library(pbmcapply)
 library(vegan)
+library(igraph)
 
 source("./R/functions.R")
 setwd("~/Documents/GitHub/lg_dataAnalysis")
@@ -53,10 +54,13 @@ for (i in seq_along(combined)) {
 combined <- addVariable(combined, "Patient", c("Pt1", "Pt2", "Pt3", "Pt4", "Pt5", "Pt6", "Pt1", "Pt2", "Pt3", "Pt1", "Pt2", "Pt3", "Pt4", "Pt5", "Pt6"))
 ```
 
+```{r}
+combined2 <- combined[-c(4:15)] 
+```
 
     
 ```{r}
-testRun <- calculateConvergence(combined, chain = "TCRB", group = "Patient", 
+testRun <- calculateConvergence(combined2, chain = "TCRB", group = "Patient", 
                           motif.length = 3, num.cores =3, boot.straps = 1000, 
                           edit.distance = 1, p.value.motif = 0.005, fc.motif = 5,
                           score.cluster = TRUE)

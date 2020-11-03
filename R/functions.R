@@ -269,7 +269,7 @@ calculateConvergence <- function(combined, chain = "TCRB", group = NULL,
     }
     names(new.list) <- names(tmp.list)
     if (score.cluster == TRUE) {
-        message(paste("Calculating Cluster Probabilities", names(tmp.list)[x]))
+        message(paste("Calculating Cluster Probabilities"))
         new.list <- scoreCluster(new.list)
     }
     return(new.list)
@@ -313,7 +313,7 @@ scoreCluster <- function(convergence) {
         tmp <- convergence[[i]][[1]]
         cluster <- unique(tmp$TCRcluster)
         for (j in seq_along(cluster)) {
-            sub <- tmp[tmp$TCRcluster == cluster,]
+            sub <- tmp[tmp$TCRcluster == cluster[j],]
             
             #Probability of randomly length diversity
             #somewhat biased because of the selection of vgenes
