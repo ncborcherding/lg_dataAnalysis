@@ -1,3 +1,26 @@
+#Chains for MAIT and INKT cells
+scoreMAIT <- function(v, j, length, species = NULL) {
+    comp <- list(mouse = list(v = "TRAV1", j = "TRAJ33", length = 12), 
+                human = list(v = "TRAV1-2", j = c("TRAJ33", "TRAJ20", "TRAJ12"), length = 12))
+    if(comp[[species]]$v == v &  j %in% comp[[species]]$j & length %in% comp[[species]]$length){
+        return(1)
+    }
+    else {
+        return(0)
+    }
+}
+
+scoreINKT <- function(v, j, length, species = NULL) {
+    comp <- list(mouse = list(v = "TRAV11", j = "TRAJ18", length = 15), 
+                 human = list(v = "TRAV10", j = c("TRAJ18", "TRBV25"), length = c(14,15,16)))
+    if(comp[[species]]$v == v &  j %in% comp[[species]]$j & length %in% comp[[species]]$length){
+        return(1)
+    }
+    else {
+        return(0)
+    }
+}
+
 # Getting positions from matrix of global and local convergence.
 
 # out is the matrix
