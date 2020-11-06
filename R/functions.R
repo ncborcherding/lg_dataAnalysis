@@ -1,24 +1,38 @@
 #Chains for MAIT and INKT cells
-scoreMAIT <- function(v, j, length, species = NULL) {
+scoreMAIT <- function(membership, species = NULL) {
     comp <- list(mouse = list(v = "TRAV1", j = "TRAJ33", length = 12), 
                 human = list(v = "TRAV1-2", j = c("TRAJ33", "TRAJ20", "TRAJ12"), length = 12))
-    if(comp[[species]]$v == v &  j %in% comp[[species]]$j & length %in% comp[[species]]$length){
-        return(1)
+    score <- data.frame("cdr3" = membership$cdr3, score = 0)
+    for (i in seq_len(nrow(membership))) {
+        v <- membership$v[i]
+        j <- membership$j[i]
+        length <- nchar(membership$cdr3)[i]
+        if(comp[[species]]$v == v &  j %in% comp[[species]]$j & length %in% comp[[species]]$length){
+            score$score[i] <- 1
+        }
+        else {
+            next()
+        }
     }
-    else {
-        return(0)
-    }
+    return(score)
 }
 
-scoreINKT <- function(v, j, length, species = NULL) {
+scoreINKT <- function(membership, species = NULL) {
     comp <- list(mouse = list(v = "TRAV11", j = "TRAJ18", length = 15), 
                  human = list(v = "TRAV10", j = c("TRAJ18", "TRBV25"), length = c(14,15,16)))
-    if(comp[[species]]$v == v &  j %in% comp[[species]]$j & length %in% comp[[species]]$length){
-        return(1)
+    score <- data.frame("cdr3" = membership$cdr3, score = 0)
+    for (i in seq_len(nrow(membership))) {
+        v <- membership$v[i]
+        j <- membership$j[i]
+        length <- nchar(membership$cdr3)[i]
+        if(comp[[species]]$v == v &  j %in% comp[[species]]$j & length %in% comp[[species]]$length){
+            score$score[i] <- 1
+        }
+        else {
+            next()
+        }
     }
-    else {
-        return(0)
-    }
+    return(score)
 }
 
 # Getting positions from matrix of global and local convergence.
@@ -177,8 +191,7 @@ localConvergence <- function(tmp, motif.length = 3) {
 
 # for bootstrapping the global convergence
 sampleControl_gc <- function(i) {
-    con <- controls[sample(nrow(controls), nrow(TCR)),]
-    cdr3 <- chainCheck(chain)[[1]]
+    con <- controls[sample(nrow(controls), nrow(TCR)/2),]
     con2 <- rbind.data.frame(pbmc[pbmc[,c("cdr3_aa1")] %in% con$Var1,],
                             pbmc[pbmc[,c("cdr3_aa2")] %in% con$Var1,])
     gc_con <- globalConvergence(con2, edit.distance = edit.distance)
@@ -188,10 +201,10 @@ sampleControl_gc <- function(i) {
 
 # for bootstrapping the local convergence
 sampleControl_lc <- function(i) {
-    con <- controls[sample(nrow(controls), nrow(TCR)),]
-    cdr3 <- chainCheck(chain)[[1]]
-    con2 <- pbmc[pbmc[,cdr3] %in% con$Var1,]
-    lc_con <- localConvergence(con2, chain = "TCRB")
+    con <- controls[sample(nrow(controls), nrow(TCR)/2),]
+    con2 <- rbind.data.frame(pbmc[pbmc[,c("cdr3_aa1")] %in% con$Var1,],
+                             pbmc[pbmc[,c("cdr3_aa2")] %in% con$Var1,])
+    lc_con <- localConvergence(con2)
     y <- unlist(table(lc_con$spec.Motif))
     return(y)
 }
@@ -222,7 +235,7 @@ parsingContigList <- function(combined, group = NULL) {
 # into account for clustering
 #fc.motif the fold-change cut off for the motif/local convergence analysis
 #p.value.motif the one-side p-value cut-off for the motif/local convergence analysis
-calculateConvergence <- function(combined, chain = "TCRB", group = NULL, 
+calculateConvergence <- function(combined, group = NULL, 
                                  motif.length = 3, num.cores =2, boot.straps = 1000, 
                                  edit.distance = 1, p.value.motif = 0.001, fc.motif = 5,
                                  score.cluster = NULL) {
@@ -290,8 +303,10 @@ calculateConvergence <- function(combined, chain = "TCRB", group = NULL,
         pLC <- as.data.frame(pLC)
         membership <- merge(membership, motifs, by.x = "cdr3", by.y = "To")
         membership <- merge(membership, pLC, by.x = "filtered.motifs", by.y = "row.names")
-        tmp <- merge(tmp, membership, by.x = chainCheck(chain)[[1]], by.y = "cdr3")
-        new.list[[le]] <- list(contigs = tmp, edit.distances = TCR_dist)
+        iNKT <- scoreINKT(membership, species)
+        MAIT <- scoreMAIT(memership, species)
+        new.list[[le]] <- list(contigs = tmp, clusters = membership,  edit.distances = TCR_dist, 
+                                iNKT = iNKT, MAIT = MAIT)
     }
     names(new.list) <- names(tmp.list)
     if (score.cluster == TRUE) {
