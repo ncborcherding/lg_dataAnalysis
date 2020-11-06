@@ -25,7 +25,7 @@ colorblind_vector <- colorRampPalette(c("#FF4B20", "#FFB433", "#C6FDEC", "#7AC5F
 #Load Data
 ##################################
 file_list <- list.files("./data/")
-file_list <- file_list <- file_list[!grepl(".rda|.rds", file_list)]
+file_list <- file_list <- file_list[!grepl(".rda|.rds|.txt", file_list)]
 
 contig_list <- list()
 for (i in seq_along(file_list)){

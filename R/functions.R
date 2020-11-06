@@ -55,8 +55,8 @@ checkVgenes <- function(positions, TCR) {
     for (i in seq_len(nrow(positions))) {
         a <- positions[i,"To"]
         b <- positions[i,"From"]
-        d <- TCR[which(TCR[,"Var1"] == a), "vgene"]
-        e <- TCR[which(TCR[,"Var1"] == b), "vgene"]
+        d <- TCR[which(TCR[,"Var1"] == a), "v"]
+        e <- TCR[which(TCR[,"Var1"] == b), "v"]
         if (d[1] == e[1]) {
             next()
         } else {
@@ -89,9 +89,9 @@ chainCheck <- function(chain)  {
 # chain specifies which chain to pull the information from
 # edit.distance is the cut.off for levenshtein distance to be taken 
 # into account for clustering
-globalConvergence <- function(tmp, chain = "TCRB", edit.distance = NULL) {
+globalConvergence <- function(tmp, edit.distance = NULL) {
     
-    TCR <- getTCR(tmp, chain)
+    TCR <- getTCR(tmp)
     TCR_dist <- as.matrix(stringdistmatrix(TCR$Var1, method = "lv"))
     TCR_dist[TCR_dist >= 1+edit.distance] <- NA
     for (i in seq_len(ncol(TCR_dist))) {
@@ -109,27 +109,29 @@ globalConvergence <- function(tmp, chain = "TCRB", edit.distance = NULL) {
     return(positions_LV)
 }
 
-getTCR <- function(tmp, chain) {
-    cdr3 <- chainCheck(chain)[[1]]
-    vgene <- chainCheck(chain)[[2]]
-    TCR <- as.data.frame(na.omit(table(tmp[,cdr3])))
-    TCR$length <- nchar(as.character(TCR$Var1))
-    vgene <- unique(tmp[,c(cdr3, vgene)])
-    colnames(vgene) <- c("cdr3", "TCR")
-    vgene$TCR <- str_split(vgene$TCR, "[.]", simplify = T)[,1]
-    vgene <- unique(vgene)
-    TCR <- merge(TCR, vgene, by.x = "Var1", by.y = "cdr3")
-    colnames(TCR)[ncol(TCR)] <- "vgene"
+getTCR <- function(tmp) {
+    chains <- list(one = c("TCR1","cdr3_aa1"), two = c("TCR2","cdr3_aa2"))
+    TCR <- NULL
+    for (i in 1:2) {
+        sub <- as.data.frame(na.omit(table(tmp[,chains[[i]]][2])))
+        gene <- unique(tmp[,c(chains[[i]][2], chains[[i]][1])])
+        colnames(gene) <- c("cdr3_aa", "TCR")
+
+        gene$v <- str_split(gene$TCR, "[.]", simplify = T)[,1]
+        gene$j <- str_split(gene$TCR, "[.]", simplify = T)[,2]
+        sub <- merge(sub, gene, by.x = "Var1", by.y = "cdr3_aa")
+        TCR <- rbind.data.frame(TCR, sub)
+    }
     return(TCR)
 }
 
-localConvergence <- function(tmp, chain = "TCRB", motif.length = 3) {
+localConvergence <- function(tmp, motif.length = 3) {
     load("./data/AA_combinations.rda")
-    TCR <- getTCR(tmp,chain)
+    TCR <- getTCR(tmp)
     positions <- NULL
     vgenes <- unique(TCR[,4])
     for (j in seq_along(vgenes)) {
-        subset <- TCR[TCR$vgene %in% vgenes[j],]
+        subset <- TCR[TCR$v %in% vgenes[j],]
         out <- matrix(nrow = nrow(subset), ncol =length(AA_combinations), 0)
         colnames(out) <- AA_combinations
         rownames(out) <- subset$Var1
@@ -177,9 +179,10 @@ localConvergence <- function(tmp, chain = "TCRB", motif.length = 3) {
 sampleControl_gc <- function(i) {
     con <- controls[sample(nrow(controls), nrow(TCR)),]
     cdr3 <- chainCheck(chain)[[1]]
-    con2 <- pbmc[pbmc[,cdr3] %in% con$Var1,]
-    gc_con <- globalConvergence(con2, chain = "TCRB", edit.distance = edit.distance)
-    gc_con <- checkVgenes(gc_con, con)
+    con2 <- rbind.data.frame(pbmc[pbmc[,c("cdr3_aa1")] %in% con$Var1,],
+                            pbmc[pbmc[,c("cdr3_aa2")] %in% con$Var1,])
+    gc_con <- globalConvergence(con2, edit.distance = edit.distance)
+    gc_con <- checkVgenes(gc_con, controls)
     y <- nrow(gc_con)
 }
 
@@ -225,19 +228,19 @@ calculateConvergence <- function(combined, chain = "TCRB", group = NULL,
                                  score.cluster = NULL) {
     tmp.list <- parsingContigList(combined, group = group)
     load("./data/pbmcControls.rda")
-    controls <- getTCR(pbmc, "TCRB")
+    controls <- getTCR(pbmc)
     new.list <- list()
     for (x in seq_along(tmp.list)) {
         le <- x
         
         tmp <- tmp.list[[x]]
-        TCR <- getTCR(tmp, chain)
+        TCR <- getTCR(tmp)
         message(paste("Calculating Global Convergence in:", names(tmp.list)[x]))
-        positions_LV <- globalConvergence(tmp, chain = chain, edit.distance = edit.distance)
+        positions_LV <- globalConvergence(tmp, edit.distance = edit.distance)
         TCR_dist <- as.matrix(stringdistmatrix(TCR$Var1, method = "lv"))
         positions_LV <- checkVgenes(positions_LV, TCR)
         message(paste("Calculating Local Convergence in:", names(tmp.list)[x]))
-        positions_motif <- localConvergence(tmp, chain = chain, motif.length=motif.length)
+        positions_motif <- localConvergence(tmp, motif.length=motif.length)
         
         message(paste("Bootstrapping Random Global Convergence in:", names(tmp.list)[x]))
         bootstrap_gc <- pbmclapply(1:boot.straps, sampleControl_gc, mc.cores = num.cores)
