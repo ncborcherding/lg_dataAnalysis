@@ -19,6 +19,39 @@ setwd("~/Documents/GitHub/lg_dataAnalysis")
 colorblind_vector <- colorRampPalette(c("#FF4B20", "#FFB433", "#C6FDEC", "#7AC5FF", "#0348A6"))
 ```
 
+```{r}
+CD8toCD4score <- function(TCR) {
+    score <- data.frame("cdr3" = TCR$Var1, score = 0)
+    values_AA <- CD4CD8_metric[[1]]$ratio * CD4CD8_metric[[1]]$meanp
+    names(values_AA) <- CD4CD8_metric[[1]]$element
+    values_gene <- CD4CD8_metric[[2]]$ratio * CD4CD8_metric[[2]]$meanp
+    names(values_gene) <- CD4CD8_metric[[2]]$element
+    values_length <- CD4CD8_metric[[3]]$ratio * CD4CD8_metric[[3]]$meanp
+    names(values_length) <- CD4CD8_metric[[3]]$element
+    for (i in seq_len(nrow(TCR))) {
+        aascore <- 0
+        vscore <- values_gene[which(TCR$v[i] %in% names(values_gene))]
+        jscore <- values_gene[which(TCR$j[i] %in% names(values_gene))]
+        lscore <- values_length[which(nchar(as.character(TCR$Var1[i])) %in% names(values_length))]
+        for (j in seq_len(nchar(as.character(TCR$Var1[i])))) {
+            char <- as.character(TCR$Var1[i])
+            letter <- substr(as.character(TCR$Var1[i]), j, j)
+            tmpScore <- values_AA[which(letter %in% names(values_AA))]
+            aascore <- aascore + tmpScore
+        } 
+    aascore <- aascore/nchar(as.character(TCR$Var1[i]))
+    if (length(lscore) == 0) {
+        score$score[i] <- (vscore + jscore + aascore)/3
+    } else {     
+        score$score[i] <- (vscore + jscore + lscore + aascore)/4
+    }
+    }
+    return(score)
+}
+test <- CD8toCD4score(TCR)
+
+load("./data/CD4CD8_metric.rda")
+```
 
 ```{r}
 ###################################
@@ -55,12 +88,12 @@ combined <- addVariable(combined, "Patient", c("Pt1", "Pt2", "Pt3", "Pt4", "Pt5"
 ```
 
 ```{r}
-combined2 <- combined[-c(4:15)] 
+combined <- combined[-c(4:15)] 
 ```
 
     
 ```{r}
-testRun <- calculateConvergence(combined2, chain = "TCRB", group = "Patient", 
+testRun <- calculateConvergence(combined, chain = "TCRB", group = "Patient", 
                           motif.length = 3, num.cores =3, boot.straps = 1000, 
                           edit.distance = 1, p.value.motif = 0.005, fc.motif = 5,
                           score.cluster = TRUE)
