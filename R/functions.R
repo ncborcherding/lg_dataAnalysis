@@ -37,37 +37,55 @@ scoreINKT <- function(membership, species = NULL) {
 
 CD8toCD4score <- function(TCR) {
     load("./data/CD4CD8_metric.rda")
-    score <- data.frame("cdr3" = TCR$Var1, score = 0)
-    values_AA <- CD4CD8_metric[[1]]$ratio * CD4CD8_metric[[1]]$meanp
-    names(values_AA) <- CD4CD8_metric[[1]]$element
-    values_gene <- CD4CD8_metric[[2]]$ratio * CD4CD8_metric[[2]]$meanp
-    names(values_gene) <- CD4CD8_metric[[2]]$element
-    values_length <- CD4CD8_metric[[3]]$ratio * CD4CD8_metric[[3]]$meanp
-    names(values_length) <- CD4CD8_metric[[3]]$element
-    for (i in seq_len(nrow(TCR))) {
-        aascore <- 0
-        vscore <- values_gene[which(names(values_gene) %in% TCR$v[i])]
-        jscore <- values_gene[which(names(values_gene) %in% TCR$j[i])]
-        lscore <- values_length[which(names(values_length) %in% nchar(as.character(TCR$Var1[i])))]
-        for (j in seq_len(nchar(as.character(TCR$Var1[i])))) {
-            letter <- substr(as.character(TCR$Var1[i]), j, j)
-            tmpScore <- values_AA[which(letter %in% names(values_AA))]
-            aascore <- aascore + tmpScore
-        } 
-        aascore <- aascore/nchar(as.character(TCR$Var1[i]))
-        if(any(c(length(vscore), length(jscore), length(lscore), length(aascore)) == 0)) {
-            vars <- which(c(length(vscore), length(jscore), length(lscore), length(aascore)) == 0)
-            for (k in vars) {
-                p <- list(vscore, jscore, lscore, aascore)[[k]] 
-                varia <- c("vscore", "jscore", "lscore", "aascore")[k] 
-                p <- NA
-                assign(varia, p)
+    score <- data.frame("cdr3" = TCR$Var1, CD8score = 0, CD4score = 0)
+    comparisons <- c("CD8prop","CD4prop")
+    for (l in seq_along(comparisons)) {
+        if (l == 1) {
+            x <- 1
+            y <- 2 
             }
+        else {
+            x <- 2
+            y <- 1   
         }
-        score$score[i] <- median(c(vscore,jscore,aascore,lscore), na.rm = T)
+        values_AA <- unlist(CD4CD8_metric[[1]][comparisons[y]]/CD4CD8_metric[[1]][comparisons[x]] * 
+                CD4CD8_metric[[1]]$meanp)
+        names(values_AA) <- CD4CD8_metric[[1]]$element
+        values_gene <- unlist(CD4CD8_metric[[2]][comparisons[y]]/CD4CD8_metric[[2]][comparisons[x]] * 
+                                  CD4CD8_metric[[2]]$meanp)
+        names(values_gene) <- CD4CD8_metric[[2]]$element
+        values_length <- unlist(CD4CD8_metric[[3]][comparisons[y]]/CD4CD8_metric[[3]][comparisons[x]] * 
+                                    CD4CD8_metric[[3]]$meanp)
+        names(values_length) <- CD4CD8_metric[[3]]$element
+      
+            
+        for (i in seq_len(nrow(TCR))) {
+            aascore <- 0
+            vscore <- values_gene[which(names(values_gene) %in% TCR$v[i])]
+            jscore <- values_gene[which(names(values_gene) %in% TCR$j[i])]
+            lscore <- values_length[which(names(values_length) %in% nchar(as.character(TCR$Var1[i])))]
+            for (j in seq_len(nchar(as.character(TCR$Var1[i])))) {
+                letter <- substr(as.character(TCR$Var1[i]), j, j)
+                tmpScore <- values_AA[which(letter %in% names(values_AA))]
+                aascore <- aascore + tmpScore
+            } 
+            aascore <- aascore/nchar(as.character(TCR$Var1[i]))
+            if(any(c(length(vscore), length(jscore), length(lscore), length(aascore)) == 0)) {
+                vars <- which(c(length(vscore), length(jscore), length(lscore), length(aascore)) == 0)
+                for (k in vars) {
+                    p <- list(vscore, jscore, lscore, aascore)[[k]] 
+                    varia <- c("vscore", "jscore", "lscore", "aascore")[k] 
+                    p <- NA
+                    assign(varia, p)
+                }
+            }
+            score[i,l+1] <- median(c(vscore,jscore,aascore,lscore), na.rm = T)
+        }
     }
     return(score)
 }
+
+norm01 <- function(x){(x-min(x))/(max(x)-min(x))}
 
 # Getting positions from matrix of global and local convergence.
 
@@ -339,9 +357,9 @@ calculateConvergence <- function(combined, group = NULL,
         membership <- merge(membership, pLC, by.x = "filtered.motifs", by.y = "row.names")
         iNKT <- scoreINKT(membership, species)
         MAIT <- scoreMAIT(memership, species)
-        CD8tCD4 <- CD8toCD4score(TCR)
+        CD8toCD4 <- CD8toCD4score(TCR)
         new.list[[le]] <- list(contigs = tmp, clusters = membership,  edit.distances = TCR_dist, 
-                                iNKT = iNKT, MAIT = MAIT, CD8tCD4 = CD8tCD4)
+                                iNKT = iNKT, MAIT = MAIT, CD8toCD4 = CD8toCD4)
     }
     names(new.list) <- names(tmp.list)
     if (score.cluster == TRUE) {
