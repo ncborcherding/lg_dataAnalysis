@@ -1,3 +1,47 @@
+
+#Key for Amino Acids
+aaKey <- data.frame(AA = c("A", "R", "N", "D", "C", "Q", "E", "G", "H", "I", 
+                           "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V"),  
+                    type = c("hydrophobic", "positive", "polar", "negative",  
+                             "polar",  "polar",  "negative", "hydrophobic",  "positive",  
+                             "hydrophobic", "hydrophobic",  "positive", "hydrophobic",  
+                             "hydrophobic",  "hydrophobic",  "polar",  "polar",  "hydrophobic",  
+                             "hydrophobic",  "hydrophobic"))
+# Quantifying AA properties
+AAscoring <- function(tmp) {
+    TCR <- getTCR(tmp)
+    positions <- NULL
+    vgenes <- unique(TCR[,4])
+    aaKey.list <- split(aaKey, aaKey$type)
+    output <- NULL
+    for (j in seq_along(vgenes)) {
+        subset <- TCR[TCR$v %in% vgenes[j],]
+        out <- matrix(nrow = nrow(subset), ncol =4, 0)
+        colnames(out) <- c("Hydrophobic", "Polar", "Negative", "Positive")
+        rownames(out) <- subset$Var1
+        
+        for (i in seq_len(nrow(subset))) {
+            tmp.seq <- as.character(subset$Var1[i])
+            index <- seq_len(nchar(tmp.seq ))
+            index <- index[-c(1,2,3, nchar(tmp.seq )-2, nchar(tmp.seq )-1, nchar(tmp.seq))]
+            if (length(index) == 0) {
+                next()
+            }
+            out[i,"Hydrophobic"] <- length(which(unlist(strsplit(substr(tmp.seq, 
+                        index[1], index[length(index)]), "")) %in% unlist(aaKey.list[["hydrophobic"]]["AA"])))/length(index)
+            out[i,"Polar"] <- length(which(unlist(strsplit(substr(tmp.seq, 
+                        index[1], index[length(index)]), "")) %in% unlist(aaKey.list[["polar"]]["AA"])))/length(index)
+            out[i,"Negative"] <- length(which(unlist(strsplit(substr(tmp.seq, 
+                        index[1], index[length(index)]), "")) %in% unlist(aaKey.list[["negative"]]["AA"])))/length(index)
+            out[i,"Positive"] <- length(which(unlist(strsplit(substr(tmp.seq, 
+                        index[1], index[length(index)]), "")) %in% unlist(aaKey.list[["positive"]]["AA"])))/length(index)
+        }
+        output <- rbind(output, out)
+    }
+    return(output)
+}
+
+
 #Chains for MAIT and INKT cells
 scoreMAIT <- function(membership, species = NULL) {
     comp <- list(mouse = list(v = "TRAV1", j = "TRAJ33", length = 12), 
@@ -205,7 +249,7 @@ localConvergence <- function(tmp, motif.length = 3) {
         for (i in seq_len(nrow(subset))) {
             tmp <- as.character(subset$Var1[i])
             index <- seq_len(nchar(tmp))
-            index <- index[-c(1,2,3, nchar(tmp)-1, nchar(tmp)-2, nchar(tmp)-3)]
+            index <- index[-c(1,2,3, nchar(tmp)-2, nchar(tmp)-1, nchar(tmp))]
             for (j in index) {
                 string <- substr(tmp, j+3, j+(motif.length-1)+3)
                 if (string %in% AA_combinations & nchar(string) == motif.length) {
@@ -358,8 +402,9 @@ calculateConvergence <- function(combined, group = NULL,
         iNKT <- scoreINKT(membership, species)
         MAIT <- scoreMAIT(memership, species)
         CD8toCD4 <- CD8toCD4score(TCR)
+        AAscore <- AAscoring(tmp)
         new.list[[le]] <- list(contigs = tmp, clusters = membership,  edit.distances = TCR_dist, 
-                                iNKT = iNKT, MAIT = MAIT, CD8toCD4 = CD8toCD4)
+                                iNKT = iNKT, MAIT = MAIT, CD8toCD4 = CD8toCD4, AAscore = AAscore)
     }
     names(new.list) <- names(tmp.list)
     if (score.cluster == TRUE) {

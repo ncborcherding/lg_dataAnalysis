@@ -64,6 +64,173 @@ combined <- addVariable(combined, "Patient", c("Pt1", "Pt2", "Pt3", "Pt4", "Pt5"
 combined <- combined[-c(4:15)] 
 ```
 
+
+```{r}
+
+
+cloneCall <- theCall(cloneCall)
+        data <- bind_rows(combined)
+        unique_df <- unique(data[,"CTstrict"])
+        Con.df <- data.frame(matrix(NA, length(unique_df), length(df)))
+        Con.df <- data.frame(unique_df, Con.df, stringsAsFactors = FALSE)
+        colnames(Con.df)[1] <- "clonotype"
+        for (i in seq_along(df)) {
+            data <- df[[i]]
+            data <- data.frame(table(data[,cloneCall]), 
+                        stringsAsFactors = FALSE)
+            colnames(data) <- c(cloneCall, "Freq")
+            for (y in seq_along(unique_df)){
+                    clonotype.y <- Con.df$clonotype[y]
+                    location.y <- which(clonotype.y == data[,cloneCall])
+                    Con.df[y,i+1] <- data[location.y[1],"Freq"] }
+        }
+        colnames(Con.df)[2:(length(df)+1)] <- names(df)
+        Con.df[is.na(Con.df)] <- 0
+        list <- list()
+        for (i in seq_along(df)) {
+            list[[i]] <- Con.df[,i+1]
+            list[[i]] <- suppressWarnings(fdiscgammagpd(list[[i]], useq = 1))}
+        names(list) <- names(df)
+        grid <- 0:10000
+        distances <- get_distances(list, grid, modelType="Spliced")
+        hclust <- hclust(as.dist(distances), method = method)
+        
+        
+        
+fdiscgamma <- function(param, dat, thresh, phiu, shift = 0, method, ...){
+    opt <- optim(log(param), discgammanll, dat=dat, thresh=thresh,
+                 phiu=phiu, shift=shift, method=method, hessian = TRUE, ...)
+    opt
+}
+
+fdiscgammagpd <- function(x, useq, shift = NULL, pvector=NULL,
+                          std.err = TRUE, method = "Nelder-Mead", ...){
+    if(!is(x, "numeric")){
+        stop("x must be numeric.")
+    }
+
+    if(!is.null(shift)){
+        if(!is(shift, "numeric")){
+            stop("shift must be numeric.")
+        }
+        if(shift != round(shift)){
+            stop("shift must be an integer.")
+        }
+    }
+
+    if(!is(useq, "numeric")){
+        stop("useq must be numeric.")
+    }
+
+    if(any(x != round(x))){
+        stop("all elements in x must be integers.")
+    }
+
+
+    if(any(useq != round(useq))){
+        stop("all elements in useq must be integers.")
+    }
+
+    if(!is.null(pvector) & !(length(pvector) == 5)){
+        stop("pvector must contain 5 elements.")
+    }
+
+    if(!(is.logical(std.err))){
+        stop("std.err must be TRUE or FALSE.")
+    }
+
+    if(!(method %in% c("Nelder-Mead","BFGS",
+                       "CG", "L-BFGS-B", "SANN", "Brent"))){
+        stop("invalid method supplied.")
+    }
+
+    if(is.null(shift)){
+        shift <- min(x)
+    }
+
+    if (is.null(pvector)) {
+        pvector <- rep(NA,5)
+        s <- log(mean(x+0.5))-mean(log(x+0.5))
+        k <- (3-s + sqrt((s-3)^2 + 24*s))/12/s
+        pvector[1] <- k
+        pvector[2] <- k/mean(x)
+        pvector[3] <- as.vector(quantile(x, 0.9))
+
+        xu <- x[x>=pvector[3]]
+        initfgpd <- evmix::fgpd(xu, min(xu)-10^(-5))
+        pvector[4] <- initfgpd$mle[1]
+        pvector[5] <- initfgpd$mle[2]
+    }
+
+    bulk <- lapply(seq_along(useq),
+                   function(idx,x,useq) x < useq[idx], x=x, useq=useq)
+    tail <- lapply(seq_along(useq),
+                   function(idx,x,useq) x >= useq[idx], x=x, useq=useq)
+    phiu <- lapply(seq_along(useq),
+                   function(idx,tail) mean(tail[[idx]]), tail=tail)
+
+    gammfit <- list()
+    gpdfit <- list()
+    nllhu <- rep(NA, length(useq))
+    for(i in seq_along(useq)){
+        gammfit[[i]] <- tryCatch(expr = fdiscgamma(pvector[1:2],x[bulk[[i]]],
+                                                   useq[i],
+                                                   phiu[[i]],
+                                                   shift,
+                                                   method=method),
+                                 error = function(err) NA)
+        gpdfit[[i]] <- tryCatch(expr = fdiscgpd(pvector[4:5],
+                                                x[tail[[i]]],
+                                                useq[i],
+                                                phiu[[i]],
+                                                method=method),
+                                error = function(err) {
+                                    pvec3 <- as.vector(quantile(x,1-phiu[[i]]))
+                                    xu <- x[x>=pvec3]
+                                    initfgpd.adj <-
+                                        evmix::fgpd(x, min(xu)-10^(-5))
+                                    pvec4 <- initfgpd.adj$mle[1]
+                                    pvec5 <- initfgpd.adj$mle[2]
+                                    tryCatch(expr = fdiscgpd(c(pvec4,pvec5),
+                                                             x[tail[[i]]],
+                                                             useq[i],
+                                                             phiu[[i]],
+                                                             method=method),
+                                             error = function(err2) NA)
+                                })
+        nllhu[i] <- tryCatch(expr = gammfit[[i]]$value + gpdfit[[i]]$value,
+                             error = function(err) NA)
+    }
+
+    bestfit <- which.min(nllhu)
+    fit.out <- list(gammfit[[bestfit]], gpdfit[[bestfit]])
+    names(fit.out) <- c("bulk","tail")
+    mle <- c(mean(x >= useq[bestfit]),
+             exp(fit.out$bulk$par),
+             useq[bestfit],
+             exp(fit.out$tail$par[1]),
+             fit.out$tail$par[2])
+    names(mle) <- c("phi","shape","rate","thresh","sigma","xi")
+    if(std.err){
+        H <- fit.out$bulk$hessian %>% rbind(matrix(rep(0,4),nrow = 2)) %>%
+            cbind(rbind(matrix(rep(0,4),nrow = 2),fit.out$tail$hessian))
+        fisherInf <- tryCatch(expr = solve(H), error = function(err) NA)
+        out <- list(x = as.vector(x), shift = shift, init = as.vector(pvector),
+                    useq = useq, nllhuseq = nllhu,
+                    optim = fit.out, nllh = nllhu[bestfit],
+                    mle=mle, fisherInformation = fisherInf)
+    } else{
+        out <- list(x = as.vector(x), shift = shift, init = as.vector(pvector),
+                    useq = useq, nllhuseq = nllhu,
+                    optim = fit.out, nllh = nllhu[bestfit],
+                    mle=mle)
+    }
+    out
+}
+
+            
+```
+
     
 ```{r}
 testRun <- calculateConvergence(combined, chain = "TCRB", group = "Patient", 
