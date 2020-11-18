@@ -20,9 +20,114 @@ colorblind_vector <- colorRampPalette(c("#FF4B20", "#FFB433", "#C6FDEC", "#7AC5F
 ```
 
 ```{r}
+load("./data/pbmcControls.rda")
+controls <- getTCR(pbmc)
 
-test <- CD8toCD4score(TCR)
+sampleControl_gc <- function(i, edit.distance) {
+    con <- controls[sample(nrow(controls), 1000),]
+    con2 <- rbind.data.frame(pbmc[pbmc[,c("cdr3_aa1")] %in% con$Var1,],
+                            pbmc[pbmc[,c("cdr3_aa2")] %in% con$Var1,])
+    con2 <- con2[sample(nrow(con2), 1000),]
+    gc_con <- globalConvergence(con2, edit.distance = i)
+    gc_con <- checkVgenes(gc_con, controls)
+    y <- nrow(gc_con)
+}
 
+
+controls <- getTCR(pbmc)
+edit.distances <- list()
+for (i in 1:5) {
+    sampleControl_gc <- function(x) {
+        con <- controls[sample(nrow(controls), 1000),]
+        con2 <- rbind.data.frame(pbmc[pbmc[,c("cdr3_aa1")] %in% con$Var1,],
+                                pbmc[pbmc[,c("cdr3_aa2")] %in% con$Var1,])
+        con2 <- con2[sample(nrow(con2), 1000),]
+        gc_con <- globalConvergence(con2, edit.distance = i)
+        gc_con <- checkVgenes(gc_con, controls)
+        y <- nrow(gc_con)
+        }
+    
+    bootstrap_gc <- pbmclapply(1:1000, sampleControl_gc, mc.cores = 2)
+    edit.distances[[i]] <- unlist(bootstrap_gc)
+}
+
+save(edit.distances, file = "bootstrap_LV_Integers1.5.rda")
+
+library(tidyr)
+
+
+localConvergence2 <- function(con2, motif.length = l) {
+    comb <- t(combn(rep(c("A", "R", "N", "D", "C", "Q", "E", "G", "H", "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V"), l), l))
+    comb <- as.data.frame(unique(comb))
+    comb <- unite(comb, "comb", sep = "")
+    TCR <- getTCR(con2)
+    positions <- NULL
+    vgenes <- unique(TCR[,4])
+    for (h in seq_along(vgenes)) {
+        subset <- TCR[TCR$v %in% vgenes[h],]
+        out <- matrix(nrow = nrow(subset), ncol =length(comb$comb), 0)
+        colnames(out) <- comb$comb
+        rownames(out) <- subset$Var1
+    
+        for (i in seq_len(nrow(subset))) {
+            seq <- as.character(subset$Var1[i])
+            index <- seq_len(nchar(seq))
+            index <- index[-c(1,2,3, nchar(seq)-2, nchar(seq)-1, nchar(seq))]
+            for (j in index) {
+                string <- substr(seq, j+3, j+(motif.length-1)+3)
+                if (string %in% comb$comb & nchar(string) == motif.length) {
+                    position <- which(colnames(out) == string)
+                    out[i,position] <- out[i,position] + 1
+                } else {
+                    next()
+                }
+            }
+        }
+
+    out[out == 0] <- NA
+    positions_motif <- getPostitions(out, 0,9)
+    motifs <- unique(positions_motif[,2])
+    df.edge <- NULL
+    for (k in seq_along(motifs)) {
+        correspond <- positions_motif[positions_motif[,2] == motifs[k],]
+        if (length(correspond) == 2) {
+            next()
+        }
+        out <- t(combn(c(correspond[,1], correspond[,1]), 2))
+        out <- unique(out)
+        out <- out[out[,1] != out[,2],]
+        To <- as.character(subset$Var1)[out[,1]]
+        From <- as.character(subset$Var1)[out[,2]]
+        out <- data.frame(To,From, spec.Motif = comb$comb[motifs[k]])
+        df.edge <- rbind(df.edge, out)
+        }
+    positions <- rbind(positions, df.edge)
+    }
+    positions<- unique(positions)
+    positions <- as.data.frame(table(positions$spec.Motif))
+    return(positions)
+}
+
+
+motif.distances <- list()
+count <- 1
+for(l in 3:10) {
+    sampleControl_lc <- function(x) {
+        con <- controls[sample(nrow(controls), 1000),]
+        con2 <- rbind.data.frame(pbmc[pbmc[,c("cdr3_aa1")] %in% con$Var1,],
+                             pbmc[pbmc[,c("cdr3_aa2")] %in% con$Var1,])
+        con2 <- con2[sample(nrow(con2), 1000),]
+        lc_con <- localConvergence2(con2, motif.length = l)
+    }
+    
+    bootstrap_lc <- pbmclapply(1:1000, sampleControl_lc, mc.cores = 2)
+    motif.distances[[count]] <- bootstrap_lc
+    count <- count + 1
+    
+}
+
+save(motif.distances, file = "bootstrap_motif_Integers3.10.rda")
+    
 
 ```
 
@@ -65,171 +170,7 @@ combined <- combined[-c(4:15)]
 ```
 
 
-```{r}
 
-
-cloneCall <- theCall(cloneCall)
-        data <- bind_rows(combined)
-        unique_df <- unique(data[,"CTstrict"])
-        Con.df <- data.frame(matrix(NA, length(unique_df), length(df)))
-        Con.df <- data.frame(unique_df, Con.df, stringsAsFactors = FALSE)
-        colnames(Con.df)[1] <- "clonotype"
-        for (i in seq_along(df)) {
-            data <- df[[i]]
-            data <- data.frame(table(data[,cloneCall]), 
-                        stringsAsFactors = FALSE)
-            colnames(data) <- c(cloneCall, "Freq")
-            for (y in seq_along(unique_df)){
-                    clonotype.y <- Con.df$clonotype[y]
-                    location.y <- which(clonotype.y == data[,cloneCall])
-                    Con.df[y,i+1] <- data[location.y[1],"Freq"] }
-        }
-        colnames(Con.df)[2:(length(df)+1)] <- names(df)
-        Con.df[is.na(Con.df)] <- 0
-        list <- list()
-        for (i in seq_along(df)) {
-            list[[i]] <- Con.df[,i+1]
-            list[[i]] <- suppressWarnings(fdiscgammagpd(list[[i]], useq = 1))}
-        names(list) <- names(df)
-        grid <- 0:10000
-        distances <- get_distances(list, grid, modelType="Spliced")
-        hclust <- hclust(as.dist(distances), method = method)
-        
-        
-        
-fdiscgamma <- function(param, dat, thresh, phiu, shift = 0, method, ...){
-    opt <- optim(log(param), discgammanll, dat=dat, thresh=thresh,
-                 phiu=phiu, shift=shift, method=method, hessian = TRUE, ...)
-    opt
-}
-
-fdiscgammagpd <- function(x, useq, shift = NULL, pvector=NULL,
-                          std.err = TRUE, method = "Nelder-Mead", ...){
-    if(!is(x, "numeric")){
-        stop("x must be numeric.")
-    }
-
-    if(!is.null(shift)){
-        if(!is(shift, "numeric")){
-            stop("shift must be numeric.")
-        }
-        if(shift != round(shift)){
-            stop("shift must be an integer.")
-        }
-    }
-
-    if(!is(useq, "numeric")){
-        stop("useq must be numeric.")
-    }
-
-    if(any(x != round(x))){
-        stop("all elements in x must be integers.")
-    }
-
-
-    if(any(useq != round(useq))){
-        stop("all elements in useq must be integers.")
-    }
-
-    if(!is.null(pvector) & !(length(pvector) == 5)){
-        stop("pvector must contain 5 elements.")
-    }
-
-    if(!(is.logical(std.err))){
-        stop("std.err must be TRUE or FALSE.")
-    }
-
-    if(!(method %in% c("Nelder-Mead","BFGS",
-                       "CG", "L-BFGS-B", "SANN", "Brent"))){
-        stop("invalid method supplied.")
-    }
-
-    if(is.null(shift)){
-        shift <- min(x)
-    }
-
-    if (is.null(pvector)) {
-        pvector <- rep(NA,5)
-        s <- log(mean(x+0.5))-mean(log(x+0.5))
-        k <- (3-s + sqrt((s-3)^2 + 24*s))/12/s
-        pvector[1] <- k
-        pvector[2] <- k/mean(x)
-        pvector[3] <- as.vector(quantile(x, 0.9))
-
-        xu <- x[x>=pvector[3]]
-        initfgpd <- evmix::fgpd(xu, min(xu)-10^(-5))
-        pvector[4] <- initfgpd$mle[1]
-        pvector[5] <- initfgpd$mle[2]
-    }
-
-    bulk <- lapply(seq_along(useq),
-                   function(idx,x,useq) x < useq[idx], x=x, useq=useq)
-    tail <- lapply(seq_along(useq),
-                   function(idx,x,useq) x >= useq[idx], x=x, useq=useq)
-    phiu <- lapply(seq_along(useq),
-                   function(idx,tail) mean(tail[[idx]]), tail=tail)
-
-    gammfit <- list()
-    gpdfit <- list()
-    nllhu <- rep(NA, length(useq))
-    for(i in seq_along(useq)){
-        gammfit[[i]] <- tryCatch(expr = fdiscgamma(pvector[1:2],x[bulk[[i]]],
-                                                   useq[i],
-                                                   phiu[[i]],
-                                                   shift,
-                                                   method=method),
-                                 error = function(err) NA)
-        gpdfit[[i]] <- tryCatch(expr = fdiscgpd(pvector[4:5],
-                                                x[tail[[i]]],
-                                                useq[i],
-                                                phiu[[i]],
-                                                method=method),
-                                error = function(err) {
-                                    pvec3 <- as.vector(quantile(x,1-phiu[[i]]))
-                                    xu <- x[x>=pvec3]
-                                    initfgpd.adj <-
-                                        evmix::fgpd(x, min(xu)-10^(-5))
-                                    pvec4 <- initfgpd.adj$mle[1]
-                                    pvec5 <- initfgpd.adj$mle[2]
-                                    tryCatch(expr = fdiscgpd(c(pvec4,pvec5),
-                                                             x[tail[[i]]],
-                                                             useq[i],
-                                                             phiu[[i]],
-                                                             method=method),
-                                             error = function(err2) NA)
-                                })
-        nllhu[i] <- tryCatch(expr = gammfit[[i]]$value + gpdfit[[i]]$value,
-                             error = function(err) NA)
-    }
-
-    bestfit <- which.min(nllhu)
-    fit.out <- list(gammfit[[bestfit]], gpdfit[[bestfit]])
-    names(fit.out) <- c("bulk","tail")
-    mle <- c(mean(x >= useq[bestfit]),
-             exp(fit.out$bulk$par),
-             useq[bestfit],
-             exp(fit.out$tail$par[1]),
-             fit.out$tail$par[2])
-    names(mle) <- c("phi","shape","rate","thresh","sigma","xi")
-    if(std.err){
-        H <- fit.out$bulk$hessian %>% rbind(matrix(rep(0,4),nrow = 2)) %>%
-            cbind(rbind(matrix(rep(0,4),nrow = 2),fit.out$tail$hessian))
-        fisherInf <- tryCatch(expr = solve(H), error = function(err) NA)
-        out <- list(x = as.vector(x), shift = shift, init = as.vector(pvector),
-                    useq = useq, nllhuseq = nllhu,
-                    optim = fit.out, nllh = nllhu[bestfit],
-                    mle=mle, fisherInformation = fisherInf)
-    } else{
-        out <- list(x = as.vector(x), shift = shift, init = as.vector(pvector),
-                    useq = useq, nllhuseq = nllhu,
-                    optim = fit.out, nllh = nllhu[bestfit],
-                    mle=mle)
-    }
-    out
-}
-
-            
-```
 
     
 ```{r}
@@ -249,59 +190,5 @@ Think on the global and local convergence p-values
 
 
 
-
-
-```{r}
-y <- tmp$cdr3_aa2
-y <- unique(y)
-align <-  msa(y, type = "protein", gapOpening = 15)
-align2 <- msaConvert(align, type="ape::AAbin")
-
-y <- as.AAbin.character(y, j = length(y))
-df <- data.frame(cdr3 = y, scaled.distance = dist.aa(align2, scaled = TRUE))
-z <- dist.aa(align2, scaled = TRUE)
-test <- bind_rows(testRun)
-
-data(woodmouse)
-AA <- trans(woodmouse, 2)
-```
-
-GLIPH then scores each individual cluster (candidate convergence group) by evaluating a
-set of features that are independet of the CDR3 observations, assigning a probability 
-p to each feature, and then combining those probabilities into a single score by conflation. 
-
-For tests i through N, testing Pi(X=C) probability that cluster X is convergent, the combined
-conflation score is given as
-
-                      __N
-P(X=C) =              ||  P (X=C)
-                        i  i
-           ----------------------------
-            __N             __N
-            ||  P (X=C)  +  ||  P (X!=C)
-              i  i            i  i
-
-The individual Pi(X=C) tests include 
-
-1) global similarity probability
-2) local motif probability
-3) network size
-4) enrichment of V-gene within cluster
-5) enrichment of CDR3 length (spectratype) within cluster
-6) enrichment of clonal expansion within cluster
-7) enrichment of common HLA among donor TCR contributors in cluster 
-
-Individual score components are calculated as follows:
-
-== 3) Calculating network size p ==
-
-For each discrete cluster, the probability p of a given cluster topology can be 
-obtained from the number of members of the cluster by comparison to a lookup table 
-calculated from repeat random sampling and GLIPH clustering of naive TCR sequences 
-at a range of different sampling depths n from 25 to 5000, each performed 1000 times 
-each. 
-
-Example: at sampling depth n=500, clusters of size 5 have a probabilty p=0.002 of occuring
-in naive TCR sample sets.
 
 
