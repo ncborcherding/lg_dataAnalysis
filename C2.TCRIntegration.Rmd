@@ -111,7 +111,7 @@ localConvergence2 <- function(con2, motif.length = l) {
 
 motif.distances <- list()
 count <- 1
-for(l in 3:10) {
+for(l in 2:4) {
     sampleControl_lc <- function(x) {
         con <- controls[sample(nrow(controls), 1000),]
         con2 <- rbind.data.frame(pbmc[pbmc[,c("cdr3_aa1")] %in% con$Var1,],
@@ -126,7 +126,7 @@ for(l in 3:10) {
     
 }
 
-save(motif.distances, file = "bootstrap_motif_Integers3.10.rda")
+save(motif.distances, file = "bootstrap_motif_Integers2.4.rda")
     
 
 ```
