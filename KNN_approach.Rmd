@@ -55,7 +55,7 @@ combined <- addVariable(combined, "Patient", c("Pt1", "Pt2", "Pt3", "Pt4", "Pt5"
 
 ```{r}
 load("./data/pbmcControls.rda")
-controls <- getTCR(combined[[12]])
+controls <- getTCR(combined[[11]])
 threshold = 0.8
 
 TRA <- as.matrix(stringdistmatrix(controls[[1]]$Var1, method = "lv")) #Distance Matrix for TRA
@@ -197,7 +197,7 @@ edges <- mat.or.vec(0,2)
     edges <- rbind(edges,cbind(matches,rep(i,k)))  
  }
 
-graph <- graph_from_adjacency_matrix(, mode = "undirected")
+graph <- graph_from_adjacency_matrix(final_matrix, mode = "undirected")
 graph <- simplify(graph)
 
 graph <- graph_from_edgelist(edges,directed=F)
@@ -214,22 +214,26 @@ table(walktrap$membership)
 louvain <- cluster_louvain(graph)
 table(louvain$membership)
 
-coldef <- viridis::viridis_pal(option = "H")(length(table(walktrap$membership)))
+coldef <- rev(viridis::viridis_pal(option = "H")(length(table(walktrap$membership))))
 
-x <- components(graph, mode = "weak")
+x <- components(graph, mode = "strong")
+table(x$membership)
 
-plot.igraph(graph,layout=layout.fruchterman.reingold,vertex.color=coldef[walktrap$membership],
+coldef <- rev(viridis::viridis_pal(option = "H")(length(table(walktrap$membership))))
+
+plot.igraph(graph,layout=layout.mds,vertex.color=coldef[walktrap$membership],
             vertex.size=5,vertex.label=NA,  edge = NA, edge.label= NA)
 
 
 library(PCAtools)
-PCA <- pca(test)
+PCA <- pca(final_matrix)
 
 screeplot(PCA, axisLabSize = 18, titleLabSize = 22)
 
 ggplot() +
     geom_point(aes(x = PCA$loadings$PC1, y = PCA$loadings$PC2, color = as.factor(walktrap$membership))) +
-    scale_color_manual(values = viridis_pal()(3))
+    scale_color_manual(values = viridis_pal()(215)) + 
+  guides(color = F)
 ```
 
 ```{r}
