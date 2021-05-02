@@ -223,14 +223,14 @@ getTCR <- function(tmp) {
     chains <- list(one = c("TCR1","cdr3_aa1"), two = c("TCR2","cdr3_aa2"))
     TCR <- NULL
     for (i in 1:2) {
-        sub <- as.data.frame(na.omit(table(tmp[,chains[[i]]][2])))
-        gene <- unique(tmp[,c(chains[[i]][2], chains[[i]][1])])
-        colnames(gene) <- c("cdr3_aa", "TCR")
+        sub <- as.data.frame(tmp[,c("barcode", chains[[i]])])
+        colnames(sub) <- c("barcode", "TCR", "cdr3_aa")
 
-        gene$v <- str_split(gene$TCR, "[.]", simplify = T)[,1]
-        gene$j <- str_split(gene$TCR, "[.]", simplify = T)[,2]
-        sub <- merge(sub, gene, by.x = "Var1", by.y = "cdr3_aa")
-        TCR <- rbind.data.frame(TCR, sub)
+        sub$v <- str_split(sub$TCR, "[.]", simplify = T)[,1]
+        sub$j <- str_split(sub$TCR, "[.]", simplify = T)[,2]
+        colnames(sub)[3] <- "Var1"
+        TCR[[i]] <- sub
+        sub <- NULL
     }
     return(TCR)
 }

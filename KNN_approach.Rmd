@@ -1,0 +1,414 @@
+---
+title: "C2.TCR.integration"
+author: "Nick Borcherding"
+date: "10/27/2020"
+output: html_document
+---
+```{r}
+library(scRepertoire)
+library(stringr)
+library(stringdist)
+library(parallel)
+library(pbmcapply)
+library(vegan)
+library(igraph)
+library(Seurat)
+
+source("./R/functions.R")
+setwd("~/Documents/GitHub/lg_dataAnalysis")
+
+colorblind_vector <- colorRampPalette(c("#FF4B20", "#FFB433", "#C6FDEC", "#7AC5FF", "#0348A6"))
+```
+```{r}
+###################################
+#Load Data
+##################################
+file_list <- list.files("./data/")
+file_list <- file_list <- file_list[!grepl(".rda|.rds|.txt", file_list)]
+
+contig_list <- list()
+for (i in seq_along(file_list)){
+    contig_list[[i]] <- read.csv(paste0("./data/", file_list[i], "/filtered_contig_annotations.csv"))
+}
+
+names(contig_list) <- file_list
+
+###Need to remove prefixes of these samples that were added previously
+for (i in c(4,5,6, 13,14,15)) {
+    contig_list[[i]]$barcode <- substr(contig_list[[i]]$barcode, 11, 28)
+}
+```
+
+
+```{r}
+###################################
+#Combine Contigs
+###################################
+combined <- combineTCR(contig_list, samples = file_list, ID = rep("1", 15), cells = c("T-AB"), filterMulti = T, removeNA = T)
+
+for (i in seq_along(combined)) {
+    combined[[i]]$barcode <- gsub(names(combined)[i], file_list[i], combined[[i]]$barcode)
+}
+
+combined <- addVariable(combined, "Patient", c("Pt1", "Pt2", "Pt3", "Pt4", "Pt5", "Pt6", "Pt1", "Pt2", "Pt3", "Pt1", "Pt2", "Pt3", "Pt4", "Pt5", "Pt6"))
+```
+
+```{r}
+load("./data/pbmcControls.rda")
+controls <- getTCR(combined[[12]])
+threshold = 0.8
+
+TRA <- as.matrix(stringdistmatrix(controls[[1]]$Var1, method = "lv")) #Distance Matrix for TRA
+TRB <- as.matrix(stringdistmatrix(controls[[2]]$Var1, method = "lv")) #Distance Matrix for TRB
+
+matrix.list <- list(TRA, TRB)
+
+#####################################
+#Calculate Normalized Distance Matrix
+######################################
+
+adj.matrix.list <- list()
+for (i in seq_along(matrix.list)) {
+    matrix <- matrix.list[[i]]
+    length <- nchar(as.character(controls[[i]]$Var1))
+    medianlength <- median(nchar(as.character(controls[[i]]$Var)))
+    out_matrix <- matrix(ncol = ncol(matrix), nrow=ncol(matrix))
+    for (j in seq_len(ncol(matrix))) {
+        for (k in seq_len(nrow(matrix))) {
+            if (j == k) {
+                out_matrix[j,k] <- 1
+            } else{
+                if (length[j] - length[k] >= round(medianlength/1.5)) {
+                    out_matrix[j,k] <- matrix[j,k]/(max(length[j], length[k]))
+                    out_matrix[k,j] <- matrix[k,j]/(max(length[j], length[k]))
+                }
+                out_matrix[j,k] <- matrix[j,k]/((length[j]+ length[k])/2)
+                out_matrix[k,j] <- matrix[k,j]/((length[j]+ length[k])/2)
+            }
+        }
+    }
+    out_matrix[out_matrix < threshold] <- 0
+    out_matrix[out_matrix  >= threshold] <- 1
+   adj.matrix.list[[i]] <- out_matrix 
+   
+   
+   rownames(adj.matrix.list[[i]]) <- controls[[i]]$barcode
+   colnames(adj.matrix.list[[i]]) <- controls[[i]]$barcode
+}
+
+
+#######################################
+#Reference both genes to create network
+#######################################
+  TCRA_barcodes <- rownames(adj.matrix.list[[1]])
+  TCRB_barcodes <- rownames(adj.matrix.list[[2]])
+  unique_barcodes <- unique(TCRA_barcodes, TCRB_barcodes)
+
+  final_matrix <- matrix(ncol=length(unique_barcodes), nrow=length(unique_barcodes), 0)
+  rownames(final_matrix) <- unique_barcodes
+  colnames(final_matrix) <- unique_barcodes
+  
+  for (i in seq_along(unique_barcodes)) {
+    a <- which(adj.matrix.list[[1]][,unique_barcodes[i]] == 1)
+    b <- which(adj.matrix.list[[2]][,unique_barcodes[i]] == 1)
+    intersect <- intersect(a,b)
+    for(j in seq_along(intersect)) {
+      final_matrix[i,intersect[j]] <- 1
+      final_matrix[intersect[j], i] <- 1
+    }
+    final_matrix[i,i] <- 1
+    
+}
+
+############################################
+#Making graph and getting nearest neighbor
+###########################################
+graph <- graph_from_adjacency_matrix(final_matrix, mode = "undirected")
+graph <- simplify(graph)
+
+
+walktrap <- cluster_walktrap(graph)
+
+table(walktrap$membership)
+
+
+dist <- final_matrix
+
+graph <- graph_from_adjacency_matrix(final_matrix, mode = "undirected")
+
+
+nn_results <- nn2(final_matrix)
+```
+
+
+
+```{r}
+library(class)
+test <- controls[sample(nrow(controls), 1000),]
+
+x <- knn(test$Var1, controls$Var1, cl = test$v, k = 20)
+```
+
+```{r}
+
+threshold <- 0.8
+matrix <- as.matrix(stringdistmatrix(controls$Var1, method = "lv"))
+medianlength <- median(nchar(as.character(controls$Var)))
+meanlength <- round(mean(nchar(as.character(controls$Var))))
+
+length <- nchar(as.character(controls$Var))
+out_matrix <- matrix(ncol = ncol(matrix), nrow=ncol(matrix))
+    for (j in seq_len(ncol(matrix))) {
+        for (k in seq_len(nrow(matrix))) {
+            if (j == k) {
+                out_matrix[j,k] <- 1
+            } else{
+                if (length[j] - length[k] >= medianlength/2) {
+                    out_matrix[j,k] <- matrix[j,k]/(max(length[j], length[k]))
+                    out_matrix[k,j] <- matrix[k,j]/(max(length[j], length[k]))
+                }
+                out_matrix[j,k] <- matrix[j,k]/((length[j]+ length[k])/2)
+                out_matrix[k,j] <- matrix[k,j]/((length[j]+ length[k])/2)
+            }
+        }
+      test[test < 0.8] <- 0
+      test[test >= 0.8] <- 1
+    }
+
+library(RANN)
+
+test <- barcoding1[,3:ncol(barcoding1)]
+
+
+
+x <- nn2(test)
+
+y <- nn2(controls$Var1[1:100])
+
+dist <- test
+
+k = 10
+edges <- mat.or.vec(0,2)
+ for (i in 1:nrow(dist)){
+    # find closes neighbours
+    matches <- setdiff(order(dist[i,],decreasing = F)[1:(k+1)],i)
+    # add edges in both directions
+    edges <- rbind(edges,cbind(rep(i,k),matches))  
+    edges <- rbind(edges,cbind(matches,rep(i,k)))  
+ }
+
+graph <- graph_from_adjacency_matrix(, mode = "undirected")
+graph <- simplify(graph)
+
+graph <- graph_from_edgelist(edges,directed=F)
+  V(graph)$frame.color <- NA
+  
+  g.layout<-layout_with_fr(graph)
+  
+plot.igraph(graph,layout=layout.fruchterman.reingold, vertex.label=NA)
+
+walktrap <- cluster_walktrap(graph)
+
+table(walktrap$membership)
+
+louvain <- cluster_louvain(graph)
+table(louvain$membership)
+
+coldef <- viridis::viridis_pal(option = "H")(length(table(walktrap$membership)))
+
+x <- components(graph, mode = "weak")
+
+plot.igraph(graph,layout=layout.fruchterman.reingold,vertex.color=coldef[walktrap$membership],
+            vertex.size=5,vertex.label=NA,  edge = NA, edge.label= NA)
+
+
+library(PCAtools)
+PCA <- pca(test)
+
+screeplot(PCA, axisLabSize = 18, titleLabSize = 22)
+
+ggplot() +
+    geom_point(aes(x = PCA$loadings$PC1, y = PCA$loadings$PC2, color = as.factor(walktrap$membership))) +
+    scale_color_manual(values = viridis_pal()(3))
+```
+
+```{r}
+
+mito <- c("ATP8", "ATP6", "CO1", "CO2", "CO3", "CYB", "ND1", "ND2", "ND3", "ND4L", "ND4", "ND5", "ND6", "RNR2", "TA", "TR", "TN", "TD", "TC", "TE", "TQ", "TG", "TH", "TI", "TL1", "TL2", "TK", "TM", "TF", "TP", "TS1", "TS2", "TT", "TW", "TY", "TV", "RNR1")
+
+
+    tmp <-  Read10X(paste0("./data/RT3"))
+    colnames(tmp) <- paste("RT3", colnames(tmp), sep = '_')
+    x <- which(rownames(tmp) %in% mito)
+    rownames(tmp)[x] <- paste0("MT-", rownames(tmp)[x])
+    tmp <- CreateSeuratObject(tmp)
+    tmp[["percent.mt"]] <- PercentageFeatureSet(tmp, pattern = "^MT-")
+    
+plot1 <- FeatureScatter(tmp, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(tmp, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+CombinePlots(plots = list(plot1, plot2))
+
+tmp <- subset(tmp, subset = nFeature_RNA > 200 & nFeature_RNA < 3500 & percent.mt < 25)
+tmp <- NormalizeData(tmp)  
+tmp <- FindVariableFeatures(tmp, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(tmp)
+tmp <- ScaleData(tmp, features = all.genes)
+tmp <- RunPCA(tmp, features = VariableFeatures(object = tmp))
+    
+tmp[["adjmatrix"]]
+```
+
+
+
+
+```{r}
+library(igraph)
+graph <- graph_from_adjacency_matrix(
+  out_matrix,
+  mode = "undirected")
+graph <- simplify(graph)
+knn <- knn(graph)
+
+plot(graph)
+```
+
+```{r}
+
+
+sampleControl_gc <- function(i, edit.distance) {
+    con <- controls[sample(nrow(controls), 1000),]
+    con2 <- rbind.data.frame(pbmc[pbmc[,c("cdr3_aa1")] %in% con$Var1,],
+                            pbmc[pbmc[,c("cdr3_aa2")] %in% con$Var1,])
+    con2 <- con2[sample(nrow(con2), 1000),]
+    gc_con <- globalConvergence(con2, edit.distance = i)
+    gc_con <- checkVgenes(gc_con, controls)
+    y <- nrow(gc_con)
+}
+
+
+controls <- getTCR(pbmc)
+edit.distances <- list()
+for (i in 1:5) {
+    sampleControl_gc <- function(x) {
+        con <- controls[sample(nrow(controls), 1000),]
+        con2 <- rbind.data.frame(pbmc[pbmc[,c("cdr3_aa1")] %in% con$Var1,],
+                                pbmc[pbmc[,c("cdr3_aa2")] %in% con$Var1,])
+        con2 <- con2[sample(nrow(con2), 1000),]
+        gc_con <- globalConvergence(con2, edit.distance = i)
+        gc_con <- checkVgenes(gc_con, controls)
+        y <- nrow(gc_con)
+        }
+    
+    bootstrap_gc <- pbmclapply(1:1000, sampleControl_gc, mc.cores = 2)
+    edit.distances[[i]] <- unlist(bootstrap_gc)
+}
+
+save(edit.distances, file = "bootstrap_LV_Integers1.5.rda")
+
+library(tidyr)
+
+
+localConvergence2 <- function(con2, motif.length = l) {
+    comb <- t(combn(rep(c("A", "R", "N", "D", "C", "Q", "E", "G", "H", "I", "L", "K", "M", "F", "P", "S", "T", "W", "Y", "V"), l), l))
+    comb <- as.data.frame(unique(comb))
+    comb <- unite(comb, "comb", sep = "")
+    TCR <- getTCR(con2)
+    positions <- NULL
+    vgenes <- unique(TCR[,4])
+    for (h in seq_along(vgenes)) {
+        subset <- TCR[TCR$v %in% vgenes[h],]
+        out <- matrix(nrow = nrow(subset), ncol =length(comb$comb), 0)
+        colnames(out) <- comb$comb
+        rownames(out) <- subset$Var1
+    
+        for (i in seq_len(nrow(subset))) {
+            seq <- as.character(subset$Var1[i])
+            index <- seq_len(nchar(seq))
+            index <- index[-c(1,2,3, nchar(seq)-2, nchar(seq)-1, nchar(seq))]
+            for (j in index) {
+                string <- substr(seq, j+3, j+(motif.length-1)+3)
+                if (string %in% comb$comb & nchar(string) == motif.length) {
+                    position <- which(colnames(out) == string)
+                    out[i,position] <- out[i,position] + 1
+                } else {
+                    next()
+                }
+            }
+        }
+
+    out[out == 0] <- NA
+    positions_motif <- getPostitions(out, 0,9)
+    motifs <- unique(positions_motif[,2])
+    df.edge <- NULL
+    for (k in seq_along(motifs)) {
+        correspond <- positions_motif[positions_motif[,2] == motifs[k],]
+        if (length(correspond) == 2) {
+            next()
+        }
+        out <- t(combn(c(correspond[,1], correspond[,1]), 2))
+        out <- unique(out)
+        out <- out[out[,1] != out[,2],]
+        To <- as.character(subset$Var1)[out[,1]]
+        From <- as.character(subset$Var1)[out[,2]]
+        out <- data.frame(To,From, spec.Motif = comb$comb[motifs[k]])
+        df.edge <- rbind(df.edge, out)
+        }
+    positions <- rbind(positions, df.edge)
+    }
+    positions<- unique(positions)
+    positions <- as.data.frame(table(positions$spec.Motif))
+    return(positions)
+}
+
+
+motif.distances <- list()
+count <- 1
+for(l in 2:4) {
+    sampleControl_lc <- function(x) {
+        con <- controls[sample(nrow(controls), 1000),]
+        con2 <- rbind.data.frame(pbmc[pbmc[,c("cdr3_aa1")] %in% con$Var1,],
+                             pbmc[pbmc[,c("cdr3_aa2")] %in% con$Var1,])
+        con2 <- con2[sample(nrow(con2), 1000),]
+        lc_con <- localConvergence2(con2, motif.length = l)
+    }
+    
+    bootstrap_lc <- pbmclapply(1:1000, sampleControl_lc, mc.cores = 2)
+    motif.distances[[count]] <- bootstrap_lc
+    count <- count + 1
+    
+}
+
+save(motif.distances, file = "bootstrap_motif_Integers2.4.rda")
+    
+
+```
+
+
+
+```{r}
+combined <- combined[-c(4:15)] 
+```
+
+
+
+
+    
+```{r}
+testRun <- calculateConvergence(combined, chain = "TCRB", group = "Patient", 
+                          motif.length = 3, num.cores =3, boot.straps = 1000, 
+                          edit.distance = 1, p.value.motif = 0.005, fc.motif = 5,
+                          score.cluster = TRUE)
+
+
+```
+
+
+Need to add 1) cluster size probability
+
+Think on the global and local convergence p-values
+
+
+
+
+
+
