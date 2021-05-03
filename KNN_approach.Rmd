@@ -13,6 +13,7 @@ library(pbmcapply)
 library(vegan)
 library(igraph)
 library(Seurat)
+library(Matrix)
 
 source("./R/functions.R")
 setwd("~/Documents/GitHub/lg_dataAnalysis")
@@ -39,6 +40,49 @@ for (i in c(4,5,6, 13,14,15)) {
 }
 ```
 
+
+
+```{r}
+####################
+#Prep Seurat Object
+####################
+
+mito <- c("ATP8", "ATP6", "CO1", "CO2", "CO3", "CYB", "ND1", "ND2", "ND3", "ND4L", "ND4", "ND5", "ND6", "RNR2", "TA", "TR", "TN", "TD", "TC", "TE", "TQ", "TG", "TH", "TI", "TL1", "TL2", "TK", "TM", "TF", "TP", "TS1", "TS2", "TT", "TW", "TY", "TV", "RNR1")
+
+
+    tmp <-  Read10X(paste0("./data/RT2"))
+    colnames(tmp) <- paste("RT3", colnames(tmp), sep = '_')
+    x <- which(rownames(tmp) %in% mito)
+    rownames(tmp)[x] <- paste0("MT-", rownames(tmp)[x])
+    tmp <- CreateSeuratObject(tmp)
+    tmp[["percent.mt"]] <- PercentageFeatureSet(tmp, pattern = "^MT-")
+    
+plot1 <- FeatureScatter(tmp, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(tmp, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+CombinePlots(plots = list(plot1, plot2))
+
+tmp <- subset(tmp, subset = nFeature_RNA > 200 & nFeature_RNA < 3500 & percent.mt < 25)
+tmp <- NormalizeData(tmp)  
+tmp <- FindVariableFeatures(tmp, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(tmp)
+tmp <- ScaleData(tmp, features = all.genes)
+tmp <- RunPCA(tmp, features = VariableFeatures(object = tmp))
+    
+tmp <- FindNeighbors(tmp, dims = 1:10)
+
+x <- as.matrix(tmp@graphs$RNA_snn)
+which(x[1,] == 1)
+y <- uwot::umap(final_matrix, metric = "cosine")
+
+
+ggplot(as.data.frame(y), aes(y = y[,1], x = y[,2], color = as.factor(walktrap$membership))) + 
+  geom_point() + 
+guides(color = F) + 
+  scale_color_manual(values = rev(viridis_pal(option = "H")(length(table(walktrap$membership)))))
+
+
+
+idx = Indices(tmp)
 
 ```{r}
 ###################################
@@ -236,31 +280,7 @@ ggplot() +
   guides(color = F)
 ```
 
-```{r}
 
-mito <- c("ATP8", "ATP6", "CO1", "CO2", "CO3", "CYB", "ND1", "ND2", "ND3", "ND4L", "ND4", "ND5", "ND6", "RNR2", "TA", "TR", "TN", "TD", "TC", "TE", "TQ", "TG", "TH", "TI", "TL1", "TL2", "TK", "TM", "TF", "TP", "TS1", "TS2", "TT", "TW", "TY", "TV", "RNR1")
-
-
-    tmp <-  Read10X(paste0("./data/RT3"))
-    colnames(tmp) <- paste("RT3", colnames(tmp), sep = '_')
-    x <- which(rownames(tmp) %in% mito)
-    rownames(tmp)[x] <- paste0("MT-", rownames(tmp)[x])
-    tmp <- CreateSeuratObject(tmp)
-    tmp[["percent.mt"]] <- PercentageFeatureSet(tmp, pattern = "^MT-")
-    
-plot1 <- FeatureScatter(tmp, feature1 = "nCount_RNA", feature2 = "percent.mt")
-plot2 <- FeatureScatter(tmp, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
-CombinePlots(plots = list(plot1, plot2))
-
-tmp <- subset(tmp, subset = nFeature_RNA > 200 & nFeature_RNA < 3500 & percent.mt < 25)
-tmp <- NormalizeData(tmp)  
-tmp <- FindVariableFeatures(tmp, selection.method = "vst", nfeatures = 2000)
-all.genes <- rownames(tmp)
-tmp <- ScaleData(tmp, features = all.genes)
-tmp <- RunPCA(tmp, features = VariableFeatures(object = tmp))
-    
-tmp[["adjmatrix"]]
-```
 
 
 
